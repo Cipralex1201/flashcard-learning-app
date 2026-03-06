@@ -162,3 +162,16 @@ hr {
   transform: translateX(20px);
 }
 
+.bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: #f2f2f2;
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  background: #111;
+}
+

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { loadDB, saveDB, ensureState, resetProgressKeepCards } from "./lib/db";
-import { parseTSV, exportTSV } from "./lib/tsv";
-import type { Card, Question, Settings } from "./lib/types";
+import { loadDB, saveDB, ensureState } from "./lib/db";
+import { parseTSV } from "./lib/tsv";
+import type { Card, Question, Settings, CardState } from "./lib/types";
 import { buildChunk, makeQuestion, applyAnswer, gradeWrite } from "./lib/scheduler";
 import { diffTypedToExpected } from "./lib/diff";
 import { listVoices, speak } from "./lib/tts";
@@ -30,11 +30,6 @@ dolgozik
 עוֹבֵד
 עובד`;
 
-
-function clampInt(v: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, v));
-}
-
 type WriteInputHandle = {
   getValue: () => string;
   clear: () => void;
@@ -43,7 +38,7 @@ type WriteInputHandle = {
 
 function WriteInputUncontrolled(props: {
   disabled: boolean;
-  resetKey: string; // change this to reset when question changes (q.cardId)
+  resetKey: string;
   onEnter: () => void;
   handleRef: React.MutableRefObject<WriteInputHandle | null>;
 }) {
@@ -51,7 +46,6 @@ function WriteInputUncontrolled(props: {
 
   useEffect(() => {
     if (inputRef.current) inputRef.current.value = "";
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.resetKey]);
 
   useEffect(() => {
@@ -60,14 +54,11 @@ function WriteInputUncontrolled(props: {
       clear: () => {
         if (inputRef.current) inputRef.current.value = "";
       },
-      focus: () => {
-        inputRef.current?.focus();
-      },
+      focus: () => inputRef.current?.focus(),
     };
     return () => {
       props.handleRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -95,22 +86,16 @@ export default function App() {
   const [chunkIds, setChunkIds] = useState<string[]>([]);
   const [q, setQ] = useState<Question | null>(null);
 
-  // store only the last submitted typed answer (for diff display)
   const [lastTyped, setLastTyped] = useState("");
-
   const [feedback, setFeedback] = useState<{ ok: boolean; expected?: string; correct?: string } | null>(null);
 
   const [tsvText, setTsvText] = useState("");
   const [isImportOpen, setIsImportOpen] = useState(false);
   const showImport = isImportOpen || cards.length === 0;
 
-
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
-
-  // Handle to uncontrolled input (so buttons can read/clear it)
   const writeHandleRef = useRef<WriteInputHandle | null>(null);
 
-  // Load DB once
   useEffect(() => {
     const db = loadDB();
     setCards(db.cards);
@@ -118,12 +103,10 @@ export default function App() {
     setSettings(db.settings);
   }, []);
 
-  // Keep DB saved
   useEffect(() => {
     saveDB({ cards, states, settings });
   }, [cards, states, settings]);
 
-  // Voices can appear async
   useEffect(() => {
     const refresh = () => setVoices(listVoices());
     refresh();
@@ -133,71 +116,67 @@ export default function App() {
     };
   }, []);
 
-  // Ensure state objects exist
   useEffect(() => {
-    if (cards.length === 0) return;
+    if (!cards.length) return;
     const next = { ...states };
     for (const c of cards) ensureState(next, c.id);
     setStates(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cards.length]);
 
+  /* ===========================
+     SM-2 PROGRESS (UI)
+     =========================== */
   const progress = useMemo(() => {
-    const seen = cards.filter((c) => ensureState(states, c.id).seen).length;
     const total = cards.length;
-    const dueNow = cards.filter(
-      (c) => ensureState(states, c.id).seen && ensureState(states, c.id).dueAt <= Date.now()
-    ).length;
-    return { seen, total, dueNow };
+    const now = Date.now();
+
+    const st = (c: Card) => ensureState(states, c.id) as CardState;
+
+    const learned = cards.filter((c) => st(c).lastReviewedAt > 0).length;
+    const dueNow = cards.filter((c) => st(c).dueAt <= now).length;
+
+    const easy = cards.filter((c) => {
+      const s = st(c);
+      return s.reps >= 3 && s.ease >= 2.5 && s.intervalDays >= 15;
+    }).length;
+
+    return { total, learned, dueNow, easy };
   }, [cards, states]);
 
   function newChunkAndQuestion() {
     const chunk = buildChunk(cards, { ...states }, settings);
     setChunkIds(chunk);
-    const nq = makeQuestion(cards, { ...states }, settings, chunk);
-    setQ(nq);
+    setQ(makeQuestion(cards, { ...states }, settings, chunk));
     setLastTyped("");
     setFeedback(null);
-    // input resets via resetKey (q.cardId) when q changes
   }
 
   useEffect(() => {
-    if (cards.length === 0) return;
+    if (!cards.length) return;
     if (!q) newChunkAndQuestion();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cards.length, settings.swap, settings.mode]);
 
   function afterAnswer(cardId: string, correct: boolean) {
-    const nextStates = { ...states };
-    applyAnswer(nextStates, cardId, correct);
-    setStates(nextStates);
+    if (!q) return;
 
-    // Speak column 3 always
+    const next = { ...states };
+    applyAnswer(next, cardId, q.kind, correct);
+    setStates(next);
+
     const card = cards.find((c) => c.id === cardId);
     if (card) speak(card.tts, settings);
   }
 
   function nextQuestionMaybeRebuild() {
     const nq = makeQuestion(cards, { ...states }, settings, chunkIds);
-    if (!nq) {
-      newChunkAndQuestion();
-    } else {
+    if (!nq) newChunkAndQuestion();
+    else {
       setQ(nq);
       setLastTyped("");
       setFeedback(null);
-      // input resets via resetKey (q.cardId)
     }
-  }
-
-  function submitWriteFromInput() {
-    if (!q || q.kind !== "write") return;
-
-    const typedNow = writeHandleRef.current?.getValue() ?? "";
-    setLastTyped(typedNow);
-
-    const ok = gradeWrite(typedNow, q.expected, settings.writeTrim);
-    setFeedback({ ok, expected: q.expected });
-    afterAnswer(q.cardId, ok);
   }
 
   function clearWrite() {
@@ -205,6 +184,15 @@ export default function App() {
     setLastTyped("");
     setFeedback(null);
     writeHandleRef.current?.focus();
+  }
+
+  function submitWriteFromInput() {
+    if (!q || q.kind !== "write") return;
+    const typed = writeHandleRef.current?.getValue() ?? "";
+    setLastTyped(typed);
+    const ok = gradeWrite(typed, q.expected, settings.writeTrim);
+    setFeedback({ ok, expected: q.expected });
+    afterAnswer(q.cardId, ok);
   }
 
   function chooseMC(opt: string) {
@@ -225,16 +213,8 @@ export default function App() {
     for (const c of incoming) ensureState(nextStates, c.id);
     setStates(nextStates);
 
-    setShowImport(false);setIsImportOpen(false);
-
+    setIsImportOpen(false);
     setTsvText("");
-    setTimeout(() => newChunkAndQuestion(), 0);
-  }
-
-  function doResetProgress() {
-    const db = resetProgressKeepCards();
-    setStates(db.states);
-    setSettings(db.settings);
     setTimeout(() => newChunkAndQuestion(), 0);
   }
 
@@ -245,28 +225,17 @@ export default function App() {
         <p className="muted">
           Paste your set as: <code>term newline tts newline definition newline blank line</code>
           <br />
-          Example: <code>megy\tהולך\tהוֹלֵךְ</code>
+          Example: <code>megy{"\\n"}הוֹלֵך{"\\n"}הולך</code>
         </p>
 
-        <textarea
-          className="ta"
-          value={tsvText}
-          onChange={(e) => setTsvText(e.target.value)}
-          placeholder={SAMPLE}
-        />
+        <textarea className="ta" value={tsvText} onChange={(e) => setTsvText(e.target.value)} placeholder={SAMPLE} />
 
         <div className="row">
           <button onClick={importTSV}>Import</button>
           <button className="ghost" onClick={() => setTsvText(SAMPLE)}>
             Fill sample
           </button>
-          {cards.length > 0 && (
-            <button className="ghost" onClick={() => setIsImportOpen(false)}>
-              Close
-            </button>
-          )}
         </div>
-
 
         <p className="muted small">Runs locally in your browser. Data is saved in your browser storage.</p>
       </div>
@@ -279,118 +248,54 @@ export default function App() {
         <div>
           <h1>Hebrew Flash Learn</h1>
           <div className="muted">
-            Seen: <b>{progress.seen}</b> / {progress.total} · Due now: <b>{progress.dueNow}</b> · Chunk:{" "}
-            <b>{chunkIds.length}</b>
+            Learned: <b>{progress.learned}</b> / {progress.total}
+            {" · "}Due now: <b>{progress.dueNow}</b>
+            {" · "}Easy: <b>{progress.easy}</b>
           </div>
-        </div>
 
-        <div className="row">
-          <button className="ghost" onClick={() => setIsImportOpen(true)}>
-            Import TSV
-          </button>
+          <div style={{ marginTop: 10 }}>
+            <div className="muted small">Easy mastery</div>
+            <div className="bar">
+              <div
+                className="barFill"
+                style={{ width: `${progress.total ? (progress.easy / progress.total) * 100 : 0}%` }}
+              />
+            </div>
 
-          <button className="ghost" onClick={doResetProgress}>
-            Reset progress
-          </button>
+            <div className="muted small" style={{ marginTop: 8 }}>
+              Queue cleared
+            </div>
+            <div className="bar">
+              <div
+                className="barFill"
+                style={{
+                  width: `${progress.total ? ((progress.total - progress.dueNow) / progress.total) * 100 : 0}%`,
+                }}
+              />
+            </div>
+          </div>
         </div>
       </header>
 
       <section className="card">
-        <div className="row space">
-          <div className="pill">
-            Mode:{" "}
-            <select value={settings.mode} onChange={(e) => setSettings({ ...settings, mode: e.target.value as any })}>
-              <option value="mix">Mix</option>
-              <option value="mc">Multiple choice</option>
-              <option value="write">Writing</option>
-            </select>
-          </div>
-
-          <div className="pill">
-            Swap:{" "}
-            <label className="switch">
-              <input
-                type="checkbox"
-                checked={settings.swap}
-                onChange={(e) => setSettings({ ...settings, swap: e.target.checked })}
-              />
-              <span />
-            </label>
-          </div>
-
-          <div className="pill">
-            Chunk size:{" "}
-            <input
-              type="number"
-              min={4}
-              max={30}
-              value={settings.chunkSize}
-              onChange={(e) =>
-                setSettings({ ...settings, chunkSize: clampInt(Number(e.target.value || 10), 4, 30) })
-              }
-            />
-          </div>
-
-          <div className="pill">
-            New/chunk:{" "}
-            <input
-              type="number"
-              min={0}
-              max={10}
-              value={settings.newPerChunk}
-              onChange={(e) =>
-                setSettings({ ...settings, newPerChunk: clampInt(Number(e.target.value || 3), 0, 10) })
-              }
-            />
-          </div>
-        </div>
-
-        <div className="row space" style={{ marginTop: 10 }}>
-          <div className="pill">
-            TTS:{" "}
-            <label className="switch">
-              <input
-                type="checkbox"
-                checked={settings.ttsEnabled}
-                onChange={(e) => setSettings({ ...settings, ttsEnabled: e.target.checked })}
-              />
-              <span />
-            </label>
-          </div>
-
-          <div className="pill">
-            Lang:{" "}
-            <input
-              value={settings.ttsLang}
-              onChange={(e) => setSettings({ ...settings, ttsLang: e.target.value })}
-              style={{ width: 90 }}
-            />
-          </div>
-
-          <div className="pill">
-            Voice:{" "}
-            <select
-              value={settings.preferredVoiceURI ?? ""}
-              onChange={(e) => setSettings({ ...settings, preferredVoiceURI: e.target.value || null })}
-            >
-              <option value="">(default)</option>
-              {voices.map((v) => (
-                <option key={v.voiceURI} value={v.voiceURI}>
-                  {v.name} {v.lang ? `(${v.lang})` : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <button className="ghost" onClick={() => q && speak(cards.find((c) => c.id === q.cardId)?.tts ?? "", settings)}>
-            ▶ Speak (col 3)
-          </button>
-        </div>
-
-        <hr />
-
         {!q ? (
-          <div className="muted">No question available. Import some cards.</div>
+          <div className="muted">
+            No question available.
+            <div className="row" style={{ marginTop: 10 }}>
+              <button onClick={newChunkAndQuestion}>Build queue</button>
+              <button
+                className="ghost"
+                onClick={() => {
+                  console.log("cards", cards.length, "chunkIds", chunkIds.length, "dueNow", progress.dueNow);
+                }}
+              >
+                Debug
+              </button>
+            </div>
+            <div className="muted small" style={{ marginTop: 10 }}>
+              If this stays empty: buildChunk() returned 0 ids.
+            </div>
+          </div>
         ) : (
           <>
             <div className="prompt">
@@ -398,18 +303,20 @@ export default function App() {
               <div className="big">{q.prompt}</div>
             </div>
 
+            {/* ===== MULTIPLE CHOICE ===== */}
             {q.kind === "mc" && (
               <div className="grid">
-                {q.options.map((opt, i) => (
-                  <button key={i} className="opt" onClick={() => chooseMC(opt)} disabled={!!feedback}>
-                    {opt}
+                {q.options.map((o, i) => (
+                  <button key={i} className="opt" disabled={!!feedback} onClick={() => chooseMC(o)}>
+                    {o}
                   </button>
                 ))}
               </div>
             )}
 
+            {/* ===== WRITING ===== */}
             {q.kind === "write" && (
-              <div>
+              <>
                 <WriteInputUncontrolled
                   disabled={!!feedback}
                   resetKey={q.cardId}
@@ -423,23 +330,36 @@ export default function App() {
                   <button className="ghost" onClick={clearWrite}>
                     Clear
                   </button>
+
+                  {/* optional skip, only when not answered yet */}
+                  {!feedback && (
+                    <button className="ghost" onClick={nextQuestionMaybeRebuild}>
+                      Skip
+                    </button>
+                  )}
                 </div>
-              </div>
+              </>
             )}
 
+            {/* ===== FEEDBACK + NEXT (BOTH MODES) ===== */}
             {feedback && (
-              <div className={"fb " + (feedback.ok ? "ok" : "bad")}>
+              <div className={"fb " + (feedback.ok ? "ok" : "bad")} style={{ marginTop: 12 }}>
                 <div className="row space">
                   <div>
                     <b>{feedback.ok ? "Correct" : "Wrong"}</b>
-                    {q.kind === "mc" && !feedback.ok && <div className="muted">Correct: {feedback.correct}</div>}
+
+                    {q.kind === "mc" && !feedback.ok && (
+                      <div className="muted">Correct: {feedback.correct}</div>
+                    )}
+
                     {q.kind === "write" && <div className="muted">Expected: {feedback.expected}</div>}
                   </div>
+
                   <button onClick={nextQuestionMaybeRebuild}>Next</button>
                 </div>
 
                 {q.kind === "write" && (
-                  <div className="typed">
+                  <div className="typed" style={{ marginTop: 10 }}>
                     <div className="muted small">Your typed answer (wrong letters are red):</div>
                     <div className="typedLine">
                       {diffTypedToExpected(
@@ -458,22 +378,6 @@ export default function App() {
           </>
         )}
       </section>
-
-      <footer className="muted small">
-        Export current set:
-        <button
-          className="ghost"
-          onClick={() => {
-            const text = exportTSV(cards);
-            navigator.clipboard.writeText(text);
-            alert("Copied TSV to clipboard.");
-          }}
-          style={{ marginLeft: 8 }}
-        >
-          Copy TSV
-        </button>
-      </footer>
     </div>
   );
 }
-
