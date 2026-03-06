@@ -5,6 +5,39 @@ import textToSpeech from "@google-cloud/text-to-speech";
 
 const client = new textToSpeech.TextToSpeechClient();
 
+/* ================= CLI ARG PARSING ================= */
+
+function parseArgs() {
+  const args = process.argv.slice(2);
+
+  if (args.length === 0 || args.includes("-h") || args.includes("--help")) {
+    console.log("Usage: node tools/gen-tts.mjs <inputfile> [-o <outputfile>]");
+    process.exit(0);
+  }
+
+  const inputFile = args[0];
+
+  let outputFile;
+  const oIndex =
+    args.indexOf("-o") !== -1
+      ? args.indexOf("-o")
+      : args.indexOf("--output");
+
+  if (oIndex !== -1 && args[oIndex + 1]) {
+    outputFile = args[oIndex + 1];
+  } else {
+    const dir = path.dirname(inputFile);
+    const base = path.basename(inputFile, path.extname(inputFile));
+    outputFile = path.join(dir, `with_audio_${base}.txt`);
+  }
+
+  return { inputFile, outputFile };
+}
+
+const { inputFile, outputFile } = parseArgs();
+
+/* ================= UTILITIES ================= */
+
 function clean(s) {
   return (s ?? "").toString().replace(/\r/g, "");
 }
@@ -17,7 +50,6 @@ function isAudioFile(s) {
 }
 
 function idForRow(a, def, ttsText) {
-  // Stable filename based on content (term+definition+tts text)
   const base = `${a}||${def}||${ttsText}`;
   return crypto.createHash("sha1").update(base, "utf8").digest("hex").slice(0, 12);
 }
@@ -28,14 +60,10 @@ function idForRow(a, def, ttsText) {
  *   tts
  *   definition
  *   <blank line>
- *
- * We are tolerant:
- * - extra blank lines are ignored
- * - if a block has only 2 lines: term + definition (tts defaults to definition)
  */
 function parseBlocks(txt) {
   const blocks = clean(txt)
-    .split(/\n\s*\n+/)      // one or more blank lines
+    .split(/\n\s*\n+/)
     .map((b) => b.trim())
     .filter((b) => b.length > 0);
 
@@ -53,8 +81,6 @@ function parseBlocks(txt) {
     const line2 = norm(lines[1]);
     const line3 = norm(lines[2]);
 
-    // Canonical: term, tts, definition
-    // Fallback (2 lines): term, definition (tts := definition)
     const definition = line3 || line2;
     const tts = line3 ? line2 : definition;
 
@@ -66,16 +92,16 @@ function parseBlocks(txt) {
   return records;
 }
 
-const inPath = process.argv[2];
-if (!inPath) {
-  console.error("Usage: node tools/gen-tts.mjs <input.txt>");
-  console.error("Expected format: term\\ntts\\ndefinition\\n\\n ...");
+/* ================= MAIN ================= */
+
+if (!fs.existsSync(inputFile)) {
+  console.error("Input file does not exist:", inputFile);
   process.exit(1);
 }
 
 fs.mkdirSync("public/audio", { recursive: true });
 
-const inputText = fs.readFileSync(inPath, "utf8");
+const inputText = fs.readFileSync(inputFile, "utf8");
 const records = parseBlocks(inputText);
 
 const outBlocks = [];
@@ -85,7 +111,6 @@ for (const r of records) {
   const definition = r.definition;
   const ttsField = r.tts;
 
-  // If already an audio filename, pass through unchanged
   if (isAudioFile(ttsField)) {
     outBlocks.push(`${term}\n${ttsField}\n${definition}\n`);
     continue;
@@ -101,8 +126,6 @@ for (const r of records) {
       input: { text: ttsText },
       voice: {
         languageCode: "he-IL",
-        // Optional:
-        // name: "he-IL-Wavenet-A",
       },
       audioConfig: { audioEncoding: "MP3" },
     });
@@ -113,10 +136,10 @@ for (const r of records) {
     console.log("Exists", outFile);
   }
 
-  // Output in block format: term, mp3 filename, definition
   outBlocks.push(`${term}\n${fname}\n${definition}\n`);
 }
 
-fs.writeFileSync("with-audio.txt", outBlocks.join("\n"), "utf8");
-console.log("\nDone. Import with-audio.txt");
+fs.writeFileSync(outputFile, outBlocks.join("\n"), "utf8");
 
+console.log("\nDone.");
+console.log("Output written to:", outputFile);
