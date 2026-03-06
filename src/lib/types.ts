@@ -22,7 +22,9 @@ export interface CardState {
   intervalDays: number;
   dueAt: number;
   lastReviewedAt: number;
+  lastShownAt: number; // <-- add this
 }
+
 
 
 export interface Settings {

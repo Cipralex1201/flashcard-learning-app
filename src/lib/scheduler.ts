@@ -79,57 +79,41 @@ export function applyAnswer(
 }
 
 /* =========================================================
-   SLIDING-BOX SELECTION ("keep asking the same 10")
-
-   Goal:
-   - Work within a small active "box" (default 10 cards).
-   - Do NOT pull in more new cards until the whole box is "easy".
-   - When the current box is all easy, slide forward by 5:
-       drop 5, add 5 new.
-   - When the entire set becomes easy, the box becomes the entire set.
-
-   This keeps brand-new sets from flooding you with new words.
+   EASY DETECTION (must match your UI counter)
    ========================================================= */
 
-const BOX_SIZE = 10;
-const SLIDE_BY = 5;
-
 function isEasy(st: CardState): boolean {
-  // Keep this consistent with the UI's "Easy" counter.
   return st.reps >= 3 && st.ease >= 2.5 && st.intervalDays >= 15;
 }
 
-function allEasyInPool(states: Record<string, CardState>, ids: string[]): boolean {
-  return ids.length > 0 && ids.every((id) => isEasy(ensureState(states, id)));
+function allEasyDeck(cards: Card[], states: Record<string, CardState>): boolean {
+  if (cards.length === 0) return true;
+  for (const c of cards) {
+    if (!isEasy(ensureState(states, c.id))) return false;
+  }
+  return true;
 }
 
-function allEasyInDeck(cards: Card[], states: Record<string, CardState>): boolean {
-  return cards.length > 0 && cards.every((c) => isEasy(ensureState(states, c.id)));
+function allEasyPool(ids: string[], states: Record<string, CardState>): boolean {
+  if (ids.length === 0) return true;
+  for (const id of ids) {
+    if (!isEasy(ensureState(states, id))) return false;
+  }
+  return true;
 }
 
+/* =========================================================
+   PRACTICE MODE (OLD GLOBAL PICKER, ANKI-LIKE)
+   ========================================================= */
 
-/**
- * Pick next card only from the active pool (chunkIds).
- *
- * Priority INSIDE the pool:
- * 1) due reviews (including failed cards due soon)
- * 2) new cards inside the box
- * 3) earliest upcoming review inside the box
- *
- * Anti-repeat: avoid showing the exact same card twice in a row if possible.
- */
-function pickNextCardId(cards: Card[], states: Record<string, CardState>, poolIds: string[]): string | null {
+function pickNextCardIdGlobal(cards: Card[], states: Record<string, CardState>): string | null {
   const t = now();
-  if (poolIds.length === 0) return null;
-
-  const pool = new Set(poolIds);
 
   const learnedDue: CardState[] = [];
   const learnedNotDue: CardState[] = [];
   const newIds: string[] = [];
 
   for (const c of cards) {
-    if (!pool.has(c.id)) continue;
     const s = ensureState(states, c.id);
 
     if (s.lastReviewedAt === 0) {
@@ -156,11 +140,10 @@ function pickNextCardId(cards: Card[], states: Record<string, CardState>, poolId
 
   if (candidates.length === 0) return null;
 
-  // Anti-repeat within pool
+  // Anti-repeat
   let mostRecentId: string | null = null;
   let mostRecentShown = -1;
   for (const c of cards) {
-    if (!pool.has(c.id)) continue;
     const s = ensureState(states, c.id);
     if (s.lastShownAt > mostRecentShown) {
       mostRecentShown = s.lastShownAt;
@@ -175,6 +158,186 @@ function pickNextCardId(cards: Card[], states: Record<string, CardState>, poolId
   return candidates[0];
 }
 
+/* =========================================================
+   LEARNING BOX MODE (SLIDING BOX)
+   - size 10
+   - slide 5
+   - IMPORTANT FIX:
+     when building a new box, prefer NOT-easy cards so you get
+     "10 new/hard cards" instead of (5 easy + 5 new).
+   - Box position is stored in localStorage so it doesn’t reset.
+   ========================================================= */
+
+const BOX_SIZE = 10;
+const SLIDE_BY = 5;
+const BOX_PTR_KEY = "hfl_box_ptr_v1";
+
+function loadBoxPtr(): number {
+  try {
+    const raw = localStorage.getItem(BOX_PTR_KEY);
+    const n = raw ? Number(raw) : 0;
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function saveBoxPtr(ptr: number) {
+  try {
+    localStorage.setItem(BOX_PTR_KEY, String(Math.max(0, Math.floor(ptr))));
+  } catch {
+    // ignore
+  }
+}
+
+function clearBoxPtr() {
+  try {
+    localStorage.removeItem(BOX_PTR_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Build a pool starting from ptr, with up to BOX_SIZE cards.
+ * Prefer cards that are NOT easy yet.
+ * If we run out of not-easy cards from ptr..end, we fill with whatever remains.
+ */
+function buildPoolFromPtr(cards: Card[], states: Record<string, CardState>, ptr: number): string[] {
+  const pool: string[] = [];
+
+  // 1) First pass: take NOT-easy cards from ptr forward
+  for (let i = ptr; i < cards.length && pool.length < BOX_SIZE; i++) {
+    const id = cards[i].id;
+    if (!isEasy(ensureState(states, id))) pool.push(id);
+  }
+
+  // 2) If not enough, fill with remaining cards (even if easy) from ptr forward
+  for (let i = ptr; i < cards.length && pool.length < BOX_SIZE; i++) {
+    const id = cards[i].id;
+    if (!pool.includes(id)) pool.push(id);
+  }
+
+  // 3) If still not enough (very end of deck), wrap to start (rare, but keeps box size stable)
+  for (let i = 0; i < ptr && pool.length < BOX_SIZE; i++) {
+    const id = cards[i].id;
+    if (!pool.includes(id)) pool.push(id);
+  }
+
+  return pool;
+}
+
+/**
+ * Build chunk = active pool.
+ *
+ * Rules:
+ * - If entire deck is easy => practice mode => return [] (App can still call makeQuestion)
+ * - Else use a sliding pointer and a pool built from it.
+ * - Pointer only moves when CURRENT pool is all easy (handled by makeQuestion returning null).
+ */
+export function buildChunk(cards: Card[], states: Record<string, CardState>, _settings: Settings): string[] {
+  if (cards.length === 0) return [];
+
+  // Practice mode: everything easy => disable box
+  if (allEasyDeck(cards, states)) {
+    clearBoxPtr();
+    return [];
+  }
+
+  // Clamp ptr so it can’t go out of range
+  let ptr = loadBoxPtr();
+  if (ptr >= cards.length) ptr = 0;
+
+  const pool = buildPoolFromPtr(cards, states, ptr);
+  return pool;
+}
+
+/* =========================================================
+   Pool picker (inside box)
+   Priority INSIDE POOL:
+   1) due (within pool)
+   2) not-easy (least recently shown)  <-- important to not ignore older box items
+   3) new
+   4) upcoming (earliest)
+   ========================================================= */
+
+function pickNextCardIdInPool(cards: Card[], states: Record<string, CardState>, poolIds: string[]): string | null {
+  const t = now();
+  const pool = new Set(poolIds);
+
+  type Item = { id: string; st: CardState; easy: boolean; isNew: boolean; due: boolean };
+
+  const items: Item[] = [];
+  for (const c of cards) {
+    if (!pool.has(c.id)) continue;
+    const st = ensureState(states, c.id);
+    items.push({
+      id: c.id,
+      st,
+      easy: isEasy(st),
+      isNew: st.lastReviewedAt === 0,
+      due: st.lastReviewedAt !== 0 && st.dueAt <= t,
+    });
+  }
+  if (items.length === 0) return null;
+
+  // 1) If any due cards exist, pick the due one that was shown least recently
+  const due = items.filter((x) => x.due);
+  if (due.length > 0) {
+    due.sort((a, b) => a.st.dueAt - b.st.dueAt || a.st.lastShownAt - b.st.lastShownAt);
+    return due[0].id;
+  }
+
+  // Helper: most recently shown in pool
+  let mostRecentId: string | null = null;
+  let mostRecentShown = -1;
+  for (const it of items) {
+    if (it.st.lastShownAt > mostRecentShown) {
+      mostRecentShown = it.st.lastShownAt;
+      mostRecentId = it.id;
+    }
+  }
+
+  // 2) Build a “cycle order”: least recently shown first (round robin)
+  // Tie-break: prefer not-easy and new slightly, but DO NOT lock to them.
+  items.sort((a, b) => {
+    const aBias = (a.easy ? 0 : -1) + (a.isNew ? -0.5 : 0);
+    const bBias = (b.easy ? 0 : -1) + (b.isNew ? -0.5 : 0);
+    // primary: least recently shown
+    const lr = a.st.lastShownAt - b.st.lastShownAt;
+    if (lr !== 0) return lr;
+    // secondary: bias (not-easy/new earlier)
+    return aBias - bBias;
+  });
+
+  // 3) Cooldown: if the “best” pick is the most recent one and we have alternatives, skip it.
+  if (mostRecentId && items.length > 1 && items[0].id === mostRecentId) {
+    return items[1].id;
+  }
+
+  // 4) Extra safety: if there is ONLY ONE not-easy card and it was shown very recently,
+  // interleave an easy/new card instead of drilling forever.
+  const notEasy = items.filter((x) => !x.easy);
+  if (notEasy.length === 1) {
+    const hard = notEasy[0];
+    const JUST_SHOWN_MS = 12_000; // tweak feel
+    if (hard.id === mostRecentId && t - hard.st.lastShownAt < JUST_SHOWN_MS) {
+      const alt = items.find((x) => x.id !== hard.id);
+      if (alt) return alt.id;
+    }
+  }
+
+  return items[0].id;
+}
+
+
+/* =========================================================
+   makeQuestion
+   - If all easy => practice mode => use GLOBAL picker (old behavior)
+   - Else, if chunkIds provided => box mode
+     If box is all easy => advance pointer by SLIDE_BY and return null (forces rebuild)
+   ========================================================= */
+
 export function makeQuestion(
   cards: Card[],
   states: Record<string, CardState>,
@@ -183,22 +346,54 @@ export function makeQuestion(
 ): Question | null {
   if (cards.length === 0) return null;
 
-  const poolIds = chunkIds.length > 0 ? chunkIds : cards.map((c) => c.id);
-  
-  // If we're in sliding-box mode (chunkIds provided) and the current box is fully easy,
-  // force a rebuild so buildChunk() can slide forward — unless the whole deck is easy.
-  if (chunkIds.length > 0 && allEasyInPool(states, chunkIds) && !allEasyInDeck(cards, states)) {
-    return null;
+  // Practice mode: all easy => old scheduling (no chunks)
+  if (allEasyDeck(cards, states)) {
+    const id = pickNextCardIdGlobal(cards, states);
+    if (!id) return null;
+
+    const card = cards.find((c) => c.id === id);
+    if (!card) return null;
+
+    ensureState(states, id).lastShownAt = now();
+    return makeQuestionFromCard(card, cards, states, settings);
   }
-  const id = pickNextCardId(cards, states, poolIds);
+
+  // Box mode if chunkIds provided, otherwise buildChunk() may have returned []
+  if (chunkIds.length > 0) {
+    // If current box is complete => slide forward and force App to rebuild the chunk.
+    if (allEasyPool(chunkIds, states)) {
+      const ptr = loadBoxPtr();
+      saveBoxPtr(ptr + SLIDE_BY);
+      return null;
+    }
+
+    const id = pickNextCardIdInPool(cards, states, chunkIds);
+    if (!id) return null;
+
+    const card = cards.find((c) => c.id === id);
+    if (!card) return null;
+
+    ensureState(states, id).lastShownAt = now();
+    return makeQuestionFromCard(card, cards, states, settings);
+  }
+
+  // If we’re not all-easy but chunkIds is empty, behave globally (safe fallback)
+  const id = pickNextCardIdGlobal(cards, states);
   if (!id) return null;
 
   const card = cards.find((c) => c.id === id);
   if (!card) return null;
 
-  // mark shown for anti-repeat + fairness
   ensureState(states, id).lastShownAt = now();
+  return makeQuestionFromCard(card, cards, states, settings);
+}
 
+function makeQuestionFromCard(
+  card: Card,
+  cards: Card[],
+  states: Record<string, CardState>,
+  settings: Settings
+): Question {
   const { prompt, answer } = makePromptAnswer(card, settings);
 
   const mode = settings.mode === "mix" ? (Math.random() < 0.5 ? "mc" : "write") : settings.mode;
@@ -208,7 +403,6 @@ export function makeQuestion(
     return { kind: "write", qid, cardId: card.id, prompt, expected: answer };
   }
 
-  // MC: distractors by similarity on answer side
   const answers = cards.map((c) => makePromptAnswer(c, settings).answer);
   const idx = cards.findIndex((c) => c.id === card.id);
 
@@ -222,42 +416,4 @@ export function makeQuestion(
 
   const options = [answer, ...distractorIdx.map((i) => answers[i])].sort(() => Math.random() - 0.5);
   return { kind: "mc", qid, cardId: card.id, prompt, correct: answer, options };
-}
-
-/**
- * Build the current "sliding box" (active pool) of card ids.
- *
- * - Starts at 10 cards.
- * - Only slides when the entire current box is "easy".
- * - Slides forward by 5.
- * - If all cards are easy, returns the entire set.
- */
-export function buildChunk(cards: Card[], states: Record<string, CardState>, _settings: Settings): string[] {
-  if (cards.length === 0) return [];
-  if (cards.length <= BOX_SIZE) return cards.map((c) => c.id);
-
-  // If EVERYTHING is easy → box becomes whole set ("practice mode").
-  let allEasy = true;
-  for (const c of cards) {
-    if (!isEasy(ensureState(states, c.id))) {
-      allEasy = false;
-      break;
-    }
-  }
-  if (allEasy) return cards.map((c) => c.id);
-
-  // Find the earliest window where previous windows are all easy.
-  // Window starts: 0, 5, 10, 15, ...
-  for (let start = 0; start < cards.length; start += SLIDE_BY) {
-    const window = cards.slice(start, start + BOX_SIZE);
-    if (window.length === 0) break;
-
-    const windowAllEasy = window.every((c) => isEasy(ensureState(states, c.id)));
-    if (!windowAllEasy) {
-      return window.map((c) => c.id);
-    }
-  }
-
-  // Safe fallback
-  return cards.map((c) => c.id);
 }
