@@ -65,6 +65,10 @@ button.opt:hover { background: #f3f4f7; }
   padding: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   margin: 10px 0;
+
+  /* IMPORTANT: prevent Hebrew RTL from reordering columns */
+  direction: ltr;
+  unicode-bidi: plaintext;
 }
 
 hr {

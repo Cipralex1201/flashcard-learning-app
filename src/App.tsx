@@ -6,12 +6,30 @@ import { buildChunk, makeQuestion, applyAnswer, gradeWrite } from "./lib/schedul
 import { diffTypedToExpected } from "./lib/diff";
 import { listVoices, speak } from "./lib/tts";
 
-const SAMPLE = `megy\tהולך\tהוֹלֵךְ
-ül\tיושב\tיוֹשֵׁב
-eszik\tאוכל\tאוֹכֵל
-iszik\tשותה\tשׁוֹתֶה
-tanul\tלומד\tלוֹמֵד
-dolgozik\tעובד\tעוֹבֵד`;
+const SAMPLE = `megy
+הוֹלֵךְ
+הולך
+
+ül
+יוֹשֵׁב
+יושב
+
+eszik
+אוֹכֵל
+אוכל
+
+iszik
+שׁוֹתֶה
+שותה
+
+tanul
+לוֹמֵד
+לומד
+
+dolgozik
+עוֹבֵד
+עובד`;
+
 
 function clampInt(v: number, min: number, max: number) {
   return Math.max(min, Math.min(max, v));
@@ -83,7 +101,9 @@ export default function App() {
   const [feedback, setFeedback] = useState<{ ok: boolean; expected?: string; correct?: string } | null>(null);
 
   const [tsvText, setTsvText] = useState("");
-  const [showImport, setShowImport] = useState(cards.length === 0);
+  const [isImportOpen, setIsImportOpen] = useState(false);
+  const showImport = isImportOpen || cards.length === 0;
+
 
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
 
@@ -205,7 +225,8 @@ export default function App() {
     for (const c of incoming) ensureState(nextStates, c.id);
     setStates(nextStates);
 
-    setShowImport(false);
+    setShowImport(false);setIsImportOpen(false);
+
     setTsvText("");
     setTimeout(() => newChunkAndQuestion(), 0);
   }
@@ -222,7 +243,7 @@ export default function App() {
       <div className="wrap">
         <h1>Hebrew Flash Learn</h1>
         <p className="muted">
-          Paste your set as: <code>term&lt;TAB&gt;definition&lt;TAB&gt;definition sound</code>
+          Paste your set as: <code>term newline tts newline definition newline blank line</code>
           <br />
           Example: <code>megy\tהולך\tהוֹלֵךְ</code>
         </p>
@@ -239,7 +260,13 @@ export default function App() {
           <button className="ghost" onClick={() => setTsvText(SAMPLE)}>
             Fill sample
           </button>
+          {cards.length > 0 && (
+            <button className="ghost" onClick={() => setIsImportOpen(false)}>
+              Close
+            </button>
+          )}
         </div>
+
 
         <p className="muted small">Runs locally in your browser. Data is saved in your browser storage.</p>
       </div>
@@ -258,9 +285,10 @@ export default function App() {
         </div>
 
         <div className="row">
-          <button className="ghost" onClick={() => setShowImport(true)}>
+          <button className="ghost" onClick={() => setIsImportOpen(true)}>
             Import TSV
           </button>
+
           <button className="ghost" onClick={doResetProgress}>
             Reset progress
           </button>
