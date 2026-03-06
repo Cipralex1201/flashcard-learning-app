@@ -253,6 +253,14 @@ export default function App() {
     if (card) speak(card.tts, settings);
   }
 
+  function playCurrentAudio() {
+    if (!q) return;
+    const card = cards.find((c) => c.id === q.cardId);
+    if (!card) return;
+    speak(card.tts, settings);
+  }
+
+
   function nextQuestionMaybeRebuild() {
     const nq = makeQuestion(cards, { ...states }, settings, chunkIds);
     if (!nq) newChunkAndQuestion();
@@ -483,6 +491,15 @@ export default function App() {
                       </div>
                     )}
                   </div>
+
+                    <button
+                      className="ghost"
+                      onClick={playCurrentAudio}
+                      disabled={!settings.ttsEnabled}
+                      title={settings.ttsEnabled ? "Play audio" : "Enable TTS in settings to play audio"}
+                    >
+                      Play Audio
+                    </button>
 
                   <button onClick={nextQuestionMaybeRebuild}>Next</button>
                 </div>
