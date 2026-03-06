@@ -11,7 +11,21 @@ function parseArgs() {
   const args = process.argv.slice(2);
 
   if (args.length === 0 || args.includes("-h") || args.includes("--help")) {
-    console.log("Usage: node tools/gen-tts.mjs <inputfile> [-o <outputfile>]");
+    console.log(
+      [
+        "Usage: node tools/gen-tts.mjs <inputfile> [-o <outputfile>] [-l <lang>]",
+        "",
+        "Options:",
+        "  -o, --output <file>   Output file (default: with_audio_<input>.txt in same dir)",
+        "  -l, --lang <lang>     TTS language: he (default), en, de",
+        "                        (also accepts full codes like en-US, de-DE, he-IL)",
+        "",
+        "Examples:",
+        "  node tools/gen-tts.mjs data/mydeck.txt",
+        "  node tools/gen-tts.mjs data/mydeck.txt -l en",
+        "  node tools/gen-tts.mjs data/mydeck.txt --lang de --output out.txt",
+      ].join("\n")
+    );
     process.exit(0);
   }
 
@@ -31,10 +45,34 @@ function parseArgs() {
     outputFile = path.join(dir, `with_audio_${base}.txt`);
   }
 
-  return { inputFile, outputFile };
+  let lang = "he"; // default Hebrew
+  const lIndex =
+    args.indexOf("-l") !== -1 ? args.indexOf("-l") : args.indexOf("--lang");
+  if (lIndex !== -1 && args[lIndex + 1]) {
+    lang = args[lIndex + 1];
+  }
+
+  return { inputFile, outputFile, lang };
 }
 
-const { inputFile, outputFile } = parseArgs();
+function resolveLanguageCode(langRaw) {
+  const lang = (langRaw ?? "").toString().trim().toLowerCase();
+
+  // Allow full BCP-47-like codes (e.g., en-US, de-DE, he-IL)
+  if (lang.includes("-")) return lang;
+
+  // Short aliases
+  if (lang === "" || lang === "he" || lang === "heb" || lang === "hebrew") return "he-IL";
+  if (lang === "en" || lang === "eng" || lang === "english") return "en-US";
+  if (lang === "de" || lang === "ger" || lang === "deu" || lang === "german") return "de-DE";
+
+  throw new Error(
+    `Unsupported --lang "${langRaw}". Use: he (default), en, de, or a full code like en-US/de-DE/he-IL.`
+  );
+}
+
+const { inputFile, outputFile, lang } = parseArgs();
+const languageCode = resolveLanguageCode(lang);
 
 /* ================= UTILITIES ================= */
 
@@ -49,8 +87,8 @@ function isAudioFile(s) {
   return /\.(mp3|wav|ogg)$/i.test((s ?? "").trim());
 }
 
-function idForRow(a, def, ttsText) {
-  const base = `${a}||${def}||${ttsText}`;
+function idForRow(a, def, ttsText, languageCode) {
+  const base = `${languageCode}||${a}||${def}||${ttsText}`;
   return crypto.createHash("sha1").update(base, "utf8").digest("hex").slice(0, 12);
 }
 
@@ -111,29 +149,28 @@ for (const r of records) {
   const definition = r.definition;
   const ttsField = r.tts;
 
+  // If the 2nd line already points to an audio file, keep it.
   if (isAudioFile(ttsField)) {
     outBlocks.push(`${term}\n${ttsField}\n${definition}\n`);
     continue;
   }
 
   const ttsText = ttsField || definition;
-  const fid = idForRow(term, definition, ttsText);
+  const fid = idForRow(term, definition, ttsText, languageCode);
   const fname = `${fid}.mp3`;
   const outFile = path.join("public", "audio", fname);
 
   if (!fs.existsSync(outFile)) {
     const [res] = await client.synthesizeSpeech({
       input: { text: ttsText },
-      voice: {
-        languageCode: "he-IL",
-      },
+      voice: { languageCode },
       audioConfig: { audioEncoding: "MP3" },
     });
 
     fs.writeFileSync(outFile, res.audioContent, "binary");
-    console.log("Wrote", outFile);
+    console.log("Wrote", outFile, `(lang=${languageCode})`);
   } else {
-    console.log("Exists", outFile);
+    console.log("Exists", outFile, `(lang=${languageCode})`);
   }
 
   outBlocks.push(`${term}\n${fname}\n${definition}\n`);
@@ -142,4 +179,5 @@ for (const r of records) {
 fs.writeFileSync(outputFile, outBlocks.join("\n"), "utf8");
 
 console.log("\nDone.");
+console.log("Language:", languageCode);
 console.log("Output written to:", outputFile);
