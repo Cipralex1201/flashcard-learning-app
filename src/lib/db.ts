@@ -19,6 +19,8 @@ const defaultSettings: Settings = {
   newPerChunk: 3,
   mode: "mix",
   writeTrim: true,
+  schedulingMode: "learning",
+  lastShownAt: 0
 };
 
 function defaultCardState(cardId: string): CardState {

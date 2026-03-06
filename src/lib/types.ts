@@ -39,6 +39,10 @@ export interface Settings {
 
   mode: "mix" | "mc" | "write";
   writeTrim: boolean;
+
+  lastShownAt: number;
+
+  schedulingMode: "learning" | "practice";
 }
 
 /**
@@ -70,4 +74,7 @@ export type Question =
  * - 5: easy
  */
 export type Grade = 0 | 1 | 2 | 3 | 4 | 5;
+
+
+
 

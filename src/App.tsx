@@ -239,7 +239,8 @@ export default function App() {
     if (!cards.length) return;
     if (!q) newChunkAndQuestion();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cards.length, settings.swap, settings.mode]);
+  }, [cards.length, settings.swap, settings.mode, settings.schedulingMode]);
+
 
   function afterAnswer(cardId: string, correct: boolean) {
     if (!q) return;
@@ -304,7 +305,7 @@ export default function App() {
   if (showImport) {
     return (
       <div className="wrap">
-        <h1>Hebrew Flash Learn</h1>
+        <h1>Flash Learn</h1>
         <p className="muted">
           Paste your set as: <code>term newline tts newline definition newline blank line</code>
           <br />
@@ -329,12 +330,44 @@ export default function App() {
     <div className="wrap">
       <header className="head">
         <div>
-          <h1>Hebrew Flash Learn</h1>
+          <h1>Flash Learn</h1>                        
           <div className="muted">
             Learned: <b>{progress.learned}</b> / {progress.total}
             {" · "}Due now: <b>{progress.dueNow}</b>
             {" · "}Easy: <b>{progress.easy}</b>
           </div>
+
+          <div className="row" style={{ marginTop: 10 }}>
+            <div className="pill">
+              <span className="muted small">Scheduling</span>
+              <b>
+                {settings.schedulingMode === "practice" ? "Practice" : "Learning"}
+              </b>
+            </div>
+
+            <div className="pill">
+              <span className="muted small">Learning</span>
+              <label className="switch" title="Toggle scheduling mode">
+                <input
+                  type="checkbox"
+                  checked={settings.schedulingMode === "practice"}
+                  onChange={(e) => {
+                    const schedulingMode = e.target.checked
+                      ? "practice"
+                      : "learning";
+
+                    setSettings((s) => ({ ...s, schedulingMode }));
+
+                    // force rebuild
+                    setQ(null);
+                  }}
+                />
+                <span />
+              </label>
+              <span className="muted small">Practice</span>
+            </div>
+          </div>
+
 
           <div style={{ marginTop: 10 }}>
             <div className="muted small">Easy mastery</div>
