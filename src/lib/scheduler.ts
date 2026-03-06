@@ -79,23 +79,57 @@ export function applyAnswer(
 }
 
 /* =========================================================
-   ANKI-LIKE NEXT CARD SELECTION (NO CHUNKS)
-   Priority:
-   1) due reviews (learned cards that are due)
-   2) new cards (never reviewed)  — no daily limit in your app
-   3) if none: earliest upcoming review (or null if you prefer)
-   Anti-repeat: don't show the same card twice in a row if possible.
+   SLIDING-BOX SELECTION ("keep asking the same 10")
+
+   Goal:
+   - Work within a small active "box" (default 10 cards).
+   - Do NOT pull in more new cards until the whole box is "easy".
+   - When the current box is all easy, slide forward by 5:
+       drop 5, add 5 new.
+   - When the entire set becomes easy, the box becomes the entire set.
+
+   This keeps brand-new sets from flooding you with new words.
    ========================================================= */
 
-function pickNextCardId(cards: Card[], states: Record<string, CardState>): string | null {
-  const t = now();
+const BOX_SIZE = 10;
+const SLIDE_BY = 5;
 
-  // Build lists once
+function isEasy(st: CardState): boolean {
+  // Keep this consistent with the UI's "Easy" counter.
+  return st.reps >= 3 && st.ease >= 2.5 && st.intervalDays >= 15;
+}
+
+function allEasyInPool(states: Record<string, CardState>, ids: string[]): boolean {
+  return ids.length > 0 && ids.every((id) => isEasy(ensureState(states, id)));
+}
+
+function allEasyInDeck(cards: Card[], states: Record<string, CardState>): boolean {
+  return cards.length > 0 && cards.every((c) => isEasy(ensureState(states, c.id)));
+}
+
+
+/**
+ * Pick next card only from the active pool (chunkIds).
+ *
+ * Priority INSIDE the pool:
+ * 1) due reviews (including failed cards due soon)
+ * 2) new cards inside the box
+ * 3) earliest upcoming review inside the box
+ *
+ * Anti-repeat: avoid showing the exact same card twice in a row if possible.
+ */
+function pickNextCardId(cards: Card[], states: Record<string, CardState>, poolIds: string[]): string | null {
+  const t = now();
+  if (poolIds.length === 0) return null;
+
+  const pool = new Set(poolIds);
+
   const learnedDue: CardState[] = [];
   const learnedNotDue: CardState[] = [];
   const newIds: string[] = [];
 
   for (const c of cards) {
+    if (!pool.has(c.id)) continue;
     const s = ensureState(states, c.id);
 
     if (s.lastReviewedAt === 0) {
@@ -107,13 +141,8 @@ function pickNextCardId(cards: Card[], states: Record<string, CardState>): strin
     else learnedNotDue.push(s);
   }
 
-  // Sort due reviews by due time, then least recently shown
   learnedDue.sort((a, b) => a.dueAt - b.dueAt || a.lastShownAt - b.lastShownAt);
-
-  // Sort new by least recently shown (mostly 0), but stable order
-  newIds.sort((a, b) => (ensureState(states, a).lastShownAt - ensureState(states, b).lastShownAt));
-
-  // fallback upcoming reviews
+  newIds.sort((a, b) => ensureState(states, a).lastShownAt - ensureState(states, b).lastShownAt);
   learnedNotDue.sort((a, b) => a.dueAt - b.dueAt || a.lastShownAt - b.lastShownAt);
 
   const candidates =
@@ -127,10 +156,11 @@ function pickNextCardId(cards: Card[], states: Record<string, CardState>): strin
 
   if (candidates.length === 0) return null;
 
-  // Anti-repeat: avoid most recently shown if we can
+  // Anti-repeat within pool
   let mostRecentId: string | null = null;
   let mostRecentShown = -1;
   for (const c of cards) {
+    if (!pool.has(c.id)) continue;
     const s = ensureState(states, c.id);
     if (s.lastShownAt > mostRecentShown) {
       mostRecentShown = s.lastShownAt;
@@ -149,11 +179,18 @@ export function makeQuestion(
   cards: Card[],
   states: Record<string, CardState>,
   settings: Settings,
-  _chunkIdsIgnored: string[] = []
+  chunkIds: string[] = []
 ): Question | null {
   if (cards.length === 0) return null;
 
-  const id = pickNextCardId(cards, states);
+  const poolIds = chunkIds.length > 0 ? chunkIds : cards.map((c) => c.id);
+  
+  // If we're in sliding-box mode (chunkIds provided) and the current box is fully easy,
+  // force a rebuild so buildChunk() can slide forward — unless the whole deck is easy.
+  if (chunkIds.length > 0 && allEasyInPool(states, chunkIds) && !allEasyInDeck(cards, states)) {
+    return null;
+  }
+  const id = pickNextCardId(cards, states, poolIds);
   if (!id) return null;
 
   const card = cards.find((c) => c.id === id);
@@ -188,9 +225,39 @@ export function makeQuestion(
 }
 
 /**
- * Kept for compatibility with your App.tsx, but "chunks" are gone.
- * Return empty array; App can keep calling makeQuestion().
+ * Build the current "sliding box" (active pool) of card ids.
+ *
+ * - Starts at 10 cards.
+ * - Only slides when the entire current box is "easy".
+ * - Slides forward by 5.
+ * - If all cards are easy, returns the entire set.
  */
-export function buildChunk(_cards: Card[], _states: Record<string, CardState>, _settings: Settings): string[] {
-  return [];
+export function buildChunk(cards: Card[], states: Record<string, CardState>, _settings: Settings): string[] {
+  if (cards.length === 0) return [];
+  if (cards.length <= BOX_SIZE) return cards.map((c) => c.id);
+
+  // If EVERYTHING is easy → box becomes whole set ("practice mode").
+  let allEasy = true;
+  for (const c of cards) {
+    if (!isEasy(ensureState(states, c.id))) {
+      allEasy = false;
+      break;
+    }
+  }
+  if (allEasy) return cards.map((c) => c.id);
+
+  // Find the earliest window where previous windows are all easy.
+  // Window starts: 0, 5, 10, 15, ...
+  for (let start = 0; start < cards.length; start += SLIDE_BY) {
+    const window = cards.slice(start, start + BOX_SIZE);
+    if (window.length === 0) break;
+
+    const windowAllEasy = window.every((c) => isEasy(ensureState(states, c.id)));
+    if (!windowAllEasy) {
+      return window.map((c) => c.id);
+    }
+  }
+
+  // Safe fallback
+  return cards.map((c) => c.id);
 }
