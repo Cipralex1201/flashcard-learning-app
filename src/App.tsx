@@ -89,29 +89,17 @@ function diffExpectedVsTyped(typedRaw: string, expectedRaw: string): Array<{ ch:
   return out;
 }
 
-const SAMPLE = `megy
-הוֹלֵךְ
-הולך
+const SAMPLE = `term1
+tts1
+definition1
 
-ül
-יוֹשֵׁב
-יושב
+term2
+tts2
+definition2
 
-eszik
-אוֹכֵל
-אוכל
-
-iszik
-שׁוֹתֶה
-שותה
-
-tanul
-לוֹמֵד
-לומד
-
-dolgozik
-עוֹבֵד
-עובד`;
+term3
+tts3
+definition3`;
 
 type WriteInputHandle = {
   getValue: () => string;
@@ -317,16 +305,12 @@ export default function App() {
         <p className="muted">
           Paste your set as: <code>term newline tts newline definition newline blank line</code>
           <br />
-          Example: <code>megy{"\n"}הוֹלֵך{"\n"}הולך</code>
         </p>
 
         <textarea className="ta" value={tsvText} onChange={(e) => setTsvText(e.target.value)} placeholder={SAMPLE} />
 
         <div className="row">
           <button onClick={importTSV}>Import</button>
-          <button className="ghost" onClick={() => setTsvText(SAMPLE)}>
-            Fill sample
-          </button>
         </div>
 
         <p className="muted small">Runs locally in your browser. Data is saved in your browser storage.</p>
