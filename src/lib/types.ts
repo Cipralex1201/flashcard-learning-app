@@ -1,29 +1,29 @@
-export type Card = {
+export interface Card {
   id: string;
-  sideA: string;      // term (e.g., Hungarian)
-  sideB: string;      // definition (e.g., Hebrew without nikud)
-  tts: string;        // column 3 (Hebrew with nikud) - ALWAYS used for TTS
-};
+  sideA: string;
+  sideB: string;
+  tts: string;
+}
 
-export type CardState = {
+export interface CardState {
   id: string;
   seen: boolean;
-  streak: number;     // consecutive correct
-  lapses: number;     // total wrong
-  dueAt: number;      // ms epoch; earlier = more urgent
+  streak: number;
+  lapses: number;
+  dueAt: number;
   lastReviewedAt: number;
-};
+}
 
-export type Settings = {
-  swap: boolean;          // if true, prompt=sideB and answer=sideA
+export interface Settings {
+  swap: boolean;
   ttsEnabled: boolean;
-  ttsLang: string;        // default "he-IL"
+  ttsLang: string;
   preferredVoiceURI: string | null;
-  chunkSize: number;      // e.g. 10
-  newPerChunk: number;    // e.g. 3
+  chunkSize: number;
+  newPerChunk: number;
   mode: "mix" | "mc" | "write";
-  writeTrim: boolean;     // you said yes (trim)
-};
+  writeTrim: boolean;
+}
 
 export type Question =
   | {
@@ -40,7 +40,8 @@ export type Question =
       expected: string;
     };
 
-export type AnswerResult = {
+export interface AnswerResult {
   correct: boolean;
   cardId: string;
-};
+}
+

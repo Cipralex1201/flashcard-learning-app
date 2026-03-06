@@ -1,4 +1,4 @@
-import { Card } from "./types";
+import type { Card } from "./types";
 
 function clean(s: string): string {
   return s.replace(/\r/g, "");

@@ -1,4 +1,4 @@
-import { Card, CardState, Settings } from "./types";
+import type { Card, CardState, Settings } from "./types";
 
 type DBShape = {
   cards: Card[];

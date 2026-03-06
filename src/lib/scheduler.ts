@@ -1,4 +1,4 @@
-import { Card, CardState, Question, Settings } from "./types";
+import type { Card, CardState, Question, Settings } from "./types";
 import { similarity, topSimilarIndices } from "./similarity";
 import { ensureState } from "./db";
 

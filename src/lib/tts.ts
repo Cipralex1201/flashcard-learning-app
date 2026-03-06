@@ -1,4 +1,4 @@
-import { Settings } from "./types";
+import type { Settings } from "./types";
 
 export function listVoices(): SpeechSynthesisVoice[] {
   return window.speechSynthesis.getVoices();

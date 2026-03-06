@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { loadDB, saveDB, ensureState, resetProgressKeepCards } from "./lib/db";
 import { parseTSV, exportTSV } from "./lib/tsv";
-import { Card, Question, Settings } from "./lib/types";
+import type { Card, Question, Settings } from "./lib/types";
 import { buildChunk, makeQuestion, applyAnswer, gradeWrite } from "./lib/scheduler";
 import { diffTypedToExpected } from "./lib/diff";
 import { listVoices, speak } from "./lib/tts";
@@ -17,6 +17,58 @@ function clampInt(v: number, min: number, max: number) {
   return Math.max(min, Math.min(max, v));
 }
 
+type WriteInputHandle = {
+  getValue: () => string;
+  clear: () => void;
+  focus: () => void;
+};
+
+function WriteInputUncontrolled(props: {
+  disabled: boolean;
+  resetKey: string; // change this to reset when question changes (q.cardId)
+  onEnter: () => void;
+  handleRef: React.MutableRefObject<WriteInputHandle | null>;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (inputRef.current) inputRef.current.value = "";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.resetKey]);
+
+  useEffect(() => {
+    props.handleRef.current = {
+      getValue: () => inputRef.current?.value ?? "",
+      clear: () => {
+        if (inputRef.current) inputRef.current.value = "";
+      },
+      focus: () => {
+        inputRef.current?.focus();
+      },
+    };
+    return () => {
+      props.handleRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <input
+      ref={inputRef}
+      className="in"
+      placeholder="Type the answer…"
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && !props.disabled) props.onEnter();
+      }}
+      disabled={props.disabled}
+      autoComplete="off"
+      autoCorrect="off"
+      autoCapitalize="off"
+      spellCheck={false}
+    />
+  );
+}
+
 export default function App() {
   const [cards, setCards] = useState<Card[]>([]);
   const [states, setStates] = useState(loadDB().states);
@@ -25,13 +77,18 @@ export default function App() {
   const [chunkIds, setChunkIds] = useState<string[]>([]);
   const [q, setQ] = useState<Question | null>(null);
 
-  const [typed, setTyped] = useState("");
+  // store only the last submitted typed answer (for diff display)
+  const [lastTyped, setLastTyped] = useState("");
+
   const [feedback, setFeedback] = useState<{ ok: boolean; expected?: string; correct?: string } | null>(null);
 
   const [tsvText, setTsvText] = useState("");
   const [showImport, setShowImport] = useState(cards.length === 0);
 
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+  // Handle to uncontrolled input (so buttons can read/clear it)
+  const writeHandleRef = useRef<WriteInputHandle | null>(null);
 
   // Load DB once
   useEffect(() => {
@@ -51,7 +108,9 @@ export default function App() {
     const refresh = () => setVoices(listVoices());
     refresh();
     window.speechSynthesis.onvoiceschanged = refresh;
-    return () => { window.speechSynthesis.onvoiceschanged = null; };
+    return () => {
+      window.speechSynthesis.onvoiceschanged = null;
+    };
   }, []);
 
   // Ensure state objects exist
@@ -64,9 +123,11 @@ export default function App() {
   }, [cards.length]);
 
   const progress = useMemo(() => {
-    const seen = cards.filter(c => ensureState(states, c.id).seen).length;
+    const seen = cards.filter((c) => ensureState(states, c.id).seen).length;
     const total = cards.length;
-    const dueNow = cards.filter(c => ensureState(states, c.id).seen && ensureState(states, c.id).dueAt <= Date.now()).length;
+    const dueNow = cards.filter(
+      (c) => ensureState(states, c.id).seen && ensureState(states, c.id).dueAt <= Date.now()
+    ).length;
     return { seen, total, dueNow };
   }, [cards, states]);
 
@@ -75,8 +136,9 @@ export default function App() {
     setChunkIds(chunk);
     const nq = makeQuestion(cards, { ...states }, settings, chunk);
     setQ(nq);
-    setTyped("");
+    setLastTyped("");
     setFeedback(null);
+    // input resets via resetKey (q.cardId) when q changes
   }
 
   useEffect(() => {
@@ -91,27 +153,38 @@ export default function App() {
     setStates(nextStates);
 
     // Speak column 3 always
-    const card = cards.find(c => c.id === cardId);
+    const card = cards.find((c) => c.id === cardId);
     if (card) speak(card.tts, settings);
   }
 
   function nextQuestionMaybeRebuild() {
-    // If chunk becomes "boring" or empty, rebuild
     const nq = makeQuestion(cards, { ...states }, settings, chunkIds);
     if (!nq) {
       newChunkAndQuestion();
     } else {
       setQ(nq);
-      setTyped("");
+      setLastTyped("");
       setFeedback(null);
+      // input resets via resetKey (q.cardId)
     }
   }
 
-  function submitWrite() {
+  function submitWriteFromInput() {
     if (!q || q.kind !== "write") return;
-    const ok = gradeWrite(typed, q.expected, settings.writeTrim);
+
+    const typedNow = writeHandleRef.current?.getValue() ?? "";
+    setLastTyped(typedNow);
+
+    const ok = gradeWrite(typedNow, q.expected, settings.writeTrim);
     setFeedback({ ok, expected: q.expected });
     afterAnswer(q.cardId, ok);
+  }
+
+  function clearWrite() {
+    writeHandleRef.current?.clear();
+    setLastTyped("");
+    setFeedback(null);
+    writeHandleRef.current?.focus();
   }
 
   function chooseMC(opt: string) {
@@ -125,7 +198,6 @@ export default function App() {
     const incoming = parseTSV(tsvText || SAMPLE);
     if (incoming.length === 0) return;
 
-    // Merge (simple): append; you can later add "dedupe"
     const merged = [...cards, ...incoming];
     setCards(merged);
 
@@ -164,14 +236,12 @@ export default function App() {
 
         <div className="row">
           <button onClick={importTSV}>Import</button>
-          <button className="ghost" onClick={() => { setTsvText(SAMPLE); }}>
+          <button className="ghost" onClick={() => setTsvText(SAMPLE)}>
             Fill sample
           </button>
         </div>
 
-        <p className="muted small">
-          Runs locally in your browser. Data is saved in your browser storage.
-        </p>
+        <p className="muted small">Runs locally in your browser. Data is saved in your browser storage.</p>
       </div>
     );
   }
@@ -182,13 +252,18 @@ export default function App() {
         <div>
           <h1>Hebrew Flash Learn</h1>
           <div className="muted">
-            Seen: <b>{progress.seen}</b> / {progress.total} · Due now: <b>{progress.dueNow}</b> · Chunk: <b>{chunkIds.length}</b>
+            Seen: <b>{progress.seen}</b> / {progress.total} · Due now: <b>{progress.dueNow}</b> · Chunk:{" "}
+            <b>{chunkIds.length}</b>
           </div>
         </div>
 
         <div className="row">
-          <button className="ghost" onClick={() => setShowImport(true)}>Import TSV</button>
-          <button className="ghost" onClick={doResetProgress}>Reset progress</button>
+          <button className="ghost" onClick={() => setShowImport(true)}>
+            Import TSV
+          </button>
+          <button className="ghost" onClick={doResetProgress}>
+            Reset progress
+          </button>
         </div>
       </header>
 
@@ -196,10 +271,7 @@ export default function App() {
         <div className="row space">
           <div className="pill">
             Mode:{" "}
-            <select
-              value={settings.mode}
-              onChange={(e) => setSettings({ ...settings, mode: e.target.value as any })}
-            >
+            <select value={settings.mode} onChange={(e) => setSettings({ ...settings, mode: e.target.value as any })}>
               <option value="mix">Mix</option>
               <option value="mc">Multiple choice</option>
               <option value="write">Writing</option>
@@ -225,7 +297,9 @@ export default function App() {
               min={4}
               max={30}
               value={settings.chunkSize}
-              onChange={(e) => setSettings({ ...settings, chunkSize: clampInt(Number(e.target.value || 10), 4, 30) })}
+              onChange={(e) =>
+                setSettings({ ...settings, chunkSize: clampInt(Number(e.target.value || 10), 4, 30) })
+              }
             />
           </div>
 
@@ -236,7 +310,9 @@ export default function App() {
               min={0}
               max={10}
               value={settings.newPerChunk}
-              onChange={(e) => setSettings({ ...settings, newPerChunk: clampInt(Number(e.target.value || 3), 0, 10) })}
+              onChange={(e) =>
+                setSettings({ ...settings, newPerChunk: clampInt(Number(e.target.value || 3), 0, 10) })
+              }
             />
           </div>
         </div>
@@ -267,12 +343,10 @@ export default function App() {
             Voice:{" "}
             <select
               value={settings.preferredVoiceURI ?? ""}
-              onChange={(e) =>
-                setSettings({ ...settings, preferredVoiceURI: e.target.value || null })
-              }
+              onChange={(e) => setSettings({ ...settings, preferredVoiceURI: e.target.value || null })}
             >
               <option value="">(default)</option>
-              {voices.map(v => (
+              {voices.map((v) => (
                 <option key={v.voiceURI} value={v.voiceURI}>
                   {v.name} {v.lang ? `(${v.lang})` : ""}
                 </option>
@@ -280,7 +354,7 @@ export default function App() {
             </select>
           </div>
 
-          <button className="ghost" onClick={() => q && speak(cards.find(c => c.id === q.cardId)?.tts ?? "", settings)}>
+          <button className="ghost" onClick={() => q && speak(cards.find((c) => c.id === q.cardId)?.tts ?? "", settings)}>
             ▶ Speak (col 3)
           </button>
         </div>
@@ -299,12 +373,7 @@ export default function App() {
             {q.kind === "mc" && (
               <div className="grid">
                 {q.options.map((opt, i) => (
-                  <button
-                    key={i}
-                    className="opt"
-                    onClick={() => chooseMC(opt)}
-                    disabled={!!feedback}
-                  >
+                  <button key={i} className="opt" onClick={() => chooseMC(opt)} disabled={!!feedback}>
                     {opt}
                   </button>
                 ))}
@@ -313,19 +382,19 @@ export default function App() {
 
             {q.kind === "write" && (
               <div>
-                <input
-                  className="in"
-                  value={typed}
-                  onChange={(e) => setTyped(e.target.value)}
-                  placeholder="Type the answer…"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !feedback) submitWrite();
-                  }}
+                <WriteInputUncontrolled
                   disabled={!!feedback}
+                  resetKey={q.cardId}
+                  onEnter={submitWriteFromInput}
+                  handleRef={writeHandleRef}
                 />
                 <div className="row" style={{ marginTop: 10 }}>
-                  <button onClick={submitWrite} disabled={!!feedback}>Check</button>
-                  <button className="ghost" onClick={() => { setTyped(""); setFeedback(null); }}>Clear</button>
+                  <button onClick={submitWriteFromInput} disabled={!!feedback}>
+                    Check
+                  </button>
+                  <button className="ghost" onClick={clearWrite}>
+                    Clear
+                  </button>
                 </div>
               </div>
             )}
@@ -335,12 +404,8 @@ export default function App() {
                 <div className="row space">
                   <div>
                     <b>{feedback.ok ? "Correct" : "Wrong"}</b>
-                    {q.kind === "mc" && !feedback.ok && (
-                      <div className="muted">Correct: {feedback.correct}</div>
-                    )}
-                    {q.kind === "write" && (
-                      <div className="muted">Expected: {feedback.expected}</div>
-                    )}
+                    {q.kind === "mc" && !feedback.ok && <div className="muted">Correct: {feedback.correct}</div>}
+                    {q.kind === "write" && <div className="muted">Expected: {feedback.expected}</div>}
                   </div>
                   <button onClick={nextQuestionMaybeRebuild}>Next</button>
                 </div>
@@ -350,10 +415,12 @@ export default function App() {
                     <div className="muted small">Your typed answer (wrong letters are red):</div>
                     <div className="typedLine">
                       {diffTypedToExpected(
-                        settings.writeTrim ? typed.trim() : typed,
+                        settings.writeTrim ? lastTyped.trim() : lastTyped,
                         settings.writeTrim ? (feedback.expected ?? "").trim() : (feedback.expected ?? "")
                       ).map((x, idx) => (
-                        <span key={idx} className={x.ok ? "okCh" : "badCh"}>{x.ch || " "}</span>
+                        <span key={idx} className={x.ok ? "okCh" : "badCh"}>
+                          {x.ch || " "}
+                        </span>
                       ))}
                     </div>
                   </div>
