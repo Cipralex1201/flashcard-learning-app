@@ -24,5 +24,5 @@ dist-ssr
 *.sw?
 
 # Data
-/public/audio
-/data
+/public/
+/data/

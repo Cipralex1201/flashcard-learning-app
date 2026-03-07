@@ -5,7 +5,10 @@ type Step =
   | { t: "del"; ch: string }; // expected deleted
 
 function normalize(s: string): string {
-  return s.normalize("NFC");
+  return s
+    .normalize("NFC")
+    .replace(/[\u0591-\u05C7]/g, "")   // remove Hebrew nikud + cantillation
+    .replace(/[?.()!;\-_'~:,]/g, "");  // remove selected junk chars, keep spaces
 }
 
 /**

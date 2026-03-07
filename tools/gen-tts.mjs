@@ -16,7 +16,7 @@ function parseArgs() {
         "Usage: node tools/gen-tts.mjs <inputfile> [-o <outputfile>] [-l <lang>]",
         "",
         "Options:",
-        "  -o, --output <file>   Output file (default: with_audio_<input>.txt in same dir)",
+        "  -o, --output <file>   Output file (default: with-audio_<input>.txt in same dir)",
         "  -l, --lang <lang>     TTS language: he (default), en, de",
         "                        (also accepts full codes like en-US, de-DE, he-IL)",
         "",
@@ -42,7 +42,7 @@ function parseArgs() {
   } else {
     const dir = path.dirname(inputFile);
     const base = path.basename(inputFile, path.extname(inputFile));
-    outputFile = path.join(dir, `with_audio_${base}.txt`);
+    outputFile = path.join(dir, `with-audio-${base}.txt`);
   }
 
   let lang = "he"; // default Hebrew
@@ -162,10 +162,13 @@ for (const r of records) {
 
   if (!fs.existsSync(outFile)) {
     const [res] = await client.synthesizeSpeech({
-      input: { text: ttsText },
-      voice: { languageCode },
-      audioConfig: { audioEncoding: "MP3" },
-    });
+    input: { text: ttsText },
+    voice: { languageCode },
+    audioConfig: {
+      audioEncoding: "MP3",
+      speakingRate: 0.75,
+    },
+  });
 
     fs.writeFileSync(outFile, res.audioContent, "binary");
     console.log("Wrote", outFile, `(lang=${languageCode})`);
