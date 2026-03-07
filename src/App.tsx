@@ -20,73 +20,128 @@ function normalizeNFC(s: string): string {
  * Returns per-character highlighting for the EXPECTED string.
  * Any character that differs from what the user typed (missing or substituted) is marked "diff".
  */
-function diffExpectedVsTyped(typedRaw: string, expectedRaw: string): Array<{ ch: string; diff: boolean }> {
-  const typed = normalizeNFC(typedRaw);
-  const expected = normalizeNFC(expectedRaw);
-  const n = typed.length;
-  const m = expected.length;
+type ExpectedStep =
+  | { t: "match"; typedIndex: number; expectedIndex: number }
+  | { t: "sub"; typedIndex: number; expectedIndex: number }
+  | { t: "ins"; typedIndex: number }
+  | { t: "del"; expectedIndex: number };
 
-  // dp[i][j] = edit distance for typed[0..i) vs expected[0..j)
+type ExpectedRawChar = {
+  raw: string;
+  comparable: string | null;
+};
+
+const IGNORE_RE = /[\u0591-\u05C7?.()!;\-_'~]/;
+
+function toComparableCharsExpected(s: string): ExpectedRawChar[] {
+  return Array.from(s.normalize("NFC")).map((ch) => ({
+    raw: ch,
+    comparable: IGNORE_RE.test(ch) ? null : ch,
+  }));
+}
+
+/**
+ * Returns per-character highlighting for the EXPECTED string.
+ * Missing/substituted real chars are diff=true.
+ * Ignored chars stay visible but are never marked diff.
+ */
+function diffExpectedVsTyped(
+  typedRaw: string,
+  expectedRaw: string
+): Array<{ ch: string; diff: boolean; ignored: boolean }> {
+  const typedChars = toComparableCharsExpected(typedRaw);
+  const expectedChars = toComparableCharsExpected(expectedRaw);
+
+  const typedComparable: Array<{ ch: string; rawIndex: number }> = [];
+  const expectedComparable: Array<{ ch: string; rawIndex: number }> = [];
+
+  for (let i = 0; i < typedChars.length; i++) {
+    if (typedChars[i].comparable !== null) {
+      typedComparable.push({ ch: typedChars[i].comparable!, rawIndex: i });
+    }
+  }
+
+  for (let i = 0; i < expectedChars.length; i++) {
+    if (expectedChars[i].comparable !== null) {
+      expectedComparable.push({ ch: expectedChars[i].comparable!, rawIndex: i });
+    }
+  }
+
+  const n = typedComparable.length;
+  const m = expectedComparable.length;
+
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
   for (let i = 0; i <= n; i++) dp[i][0] = i;
   for (let j = 0; j <= m; j++) dp[0][j] = j;
 
   for (let i = 1; i <= n; i++) {
     for (let j = 1; j <= m; j++) {
-      const cost = typed[i - 1] === expected[j - 1] ? 0 : 1;
+      const cost = typedComparable[i - 1].ch === expectedComparable[j - 1].ch ? 0 : 1;
       dp[i][j] = Math.min(
-        dp[i - 1][j] + 1, // delete from typed (insertion relative to expected)
-        dp[i][j - 1] + 1, // insert into typed (deletion relative to expected)
-        dp[i - 1][j - 1] + cost // sub/match
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
       );
     }
   }
 
-  // Backtrack to steps
-  const steps: Step[] = [];
-  let i = n,
-    j = m;
+  const steps: ExpectedStep[] = [];
+  let i = n;
+  let j = m;
+
   while (i > 0 || j > 0) {
     if (i > 0 && j > 0) {
-      const cost = typed[i - 1] === expected[j - 1] ? 0 : 1;
+      const cost = typedComparable[i - 1].ch === expectedComparable[j - 1].ch ? 0 : 1;
       if (dp[i][j] === dp[i - 1][j - 1] + cost) {
-        if (cost === 0) steps.push({ t: "match", ch: expected[j - 1] });
-        else steps.push({ t: "sub", typed: typed[i - 1], expected: expected[j - 1] });
+        steps.push(
+          cost === 0
+            ? { t: "match", typedIndex: i - 1, expectedIndex: j - 1 }
+            : { t: "sub", typedIndex: i - 1, expectedIndex: j - 1 }
+        );
         i--;
         j--;
         continue;
       }
     }
+
     if (i > 0 && dp[i][j] === dp[i - 1][j] + 1) {
-      steps.push({ t: "ins", ch: typed[i - 1] });
+      steps.push({ t: "ins", typedIndex: i - 1 });
       i--;
       continue;
     }
+
     if (j > 0 && dp[i][j] === dp[i][j - 1] + 1) {
-      steps.push({ t: "del", ch: expected[j - 1] });
+      steps.push({ t: "del", expectedIndex: j - 1 });
       j--;
       continue;
     }
-    // fallback (shouldn't happen)
+
     if (j > 0) {
-      steps.push({ t: "del", ch: expected[j - 1] });
+      steps.push({ t: "del", expectedIndex: j - 1 });
       j--;
     } else {
-      steps.push({ t: "ins", ch: typed[i - 1] });
+      steps.push({ t: "ins", typedIndex: i - 1 });
       i--;
     }
   }
+
   steps.reverse();
 
-  // Build highlighting for expected characters only
-  const out: Array<{ ch: string; diff: boolean }> = [];
+  const rawDiff = expectedChars.map((ch) => ch.comparable === null ? false : false);
+  const rawIgnored = expectedChars.map((ch) => ch.comparable === null);
+
   for (const st of steps) {
-    if (st.t === "match") out.push({ ch: st.ch, diff: false });
-    if (st.t === "sub") out.push({ ch: st.expected, diff: true });
-    if (st.t === "del") out.push({ ch: st.ch, diff: true });
-    // insertion doesn't add an expected char
+    if (st.t === "sub" || st.t === "del") {
+      const rawIndex = expectedComparable[st.expectedIndex].rawIndex;
+      rawDiff[rawIndex] = true;
+    }
   }
-  return out;
+
+  return expectedChars.map((item, idx) => ({
+    ch: item.raw,
+    diff: rawDiff[idx],
+    ignored: rawIgnored[idx],
+  }));
 }
 
 const SAMPLE = `term1
@@ -468,7 +523,16 @@ export default function App() {
                           settings.writeTrim ? lastTyped.trim() : lastTyped,
                           settings.writeTrim ? (feedback.expected ?? "").trim() : (feedback.expected ?? "")
                         ).map((x, idx) => (
-                          <span key={idx} className={x.ok ? "okCh" : "badCh"}>
+                          <span
+                            key={idx}
+                            className={
+                              x.kind === "bad"
+                                ? "badCh"
+                                : x.kind === "ignored"
+                                ? "ignoredCh"
+                                : "okCh"
+                            }
+                          >
                             {x.ch || " "}
                           </span>
                         ))}
@@ -494,17 +558,17 @@ export default function App() {
                     <div className="muted small">Correct answer (letters that differ from yours are green):</div>
                     <div className="typedLine">
                       {diffExpectedVsTyped(
-                        settings.writeTrim ? lastTyped.trim() : lastTyped,
-                        settings.writeTrim ? (feedback.expected ?? "").trim() : (feedback.expected ?? "")
-                      ).map((x, idx) => (
-                        <span
-                          key={idx}
-                          className="okCh"
-                          style={x.diff ? { color: "#16a34a", fontWeight: 700 } : undefined}
-                        >
-                          {x.ch || " "}
-                        </span>
-                      ))}
+                      settings.writeTrim ? lastTyped.trim() : lastTyped,
+                      settings.writeTrim ? (feedback.expected ?? "").trim() : (feedback.expected ?? "")
+                    ).map((x, idx) => (
+                      <span
+                        key={idx}
+                        className={x.ignored ? "ignoredCh" : "okCh"}
+                        style={x.diff ? { color: "#16a34a", fontWeight: 700 } : undefined}
+                      >
+                        {x.ch || " "}
+                      </span>
+                    ))}
                     </div>
                   </div>
                 )}

@@ -41,5 +41,16 @@
   color: #888;
 }
 
+.ignoredCh {
+  color: #9ca3af;
+}
+
+.okCh {
+  color: inherit;
+}
+
+.badCh {
+  color: #c62828;
+}
 
 

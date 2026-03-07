@@ -9,7 +9,11 @@ function now() {
 }
 
 function normTrim(s: string): string {
-  return s.normalize("NFC").trim();
+  return s
+    .normalize("NFC")
+    .replace(/[\u0591-\u05C7]/g, "")
+    .replace(/[?.()!;\-_'~]/g, "")
+    .trim();
 }
 
 export function makePromptAnswer(card: Card, settings: Settings): { prompt: string; answer: string } {
@@ -18,9 +22,16 @@ export function makePromptAnswer(card: Card, settings: Settings): { prompt: stri
   return { prompt, answer };
 }
 
+function normalizeAnswer(s: string): string {
+  return s
+    .normalize("NFC")
+    .replace(/[\u0591-\u05C7]/g, "")
+    .replace(/[?.()!;\-_'~]/g, "");
+}
+
 export function gradeWrite(typed: string, expected: string, trim: boolean): boolean {
-  const t = trim ? normTrim(typed) : typed.normalize("NFC");
-  const e = trim ? normTrim(expected) : expected.normalize("NFC");
+  const t = trim ? normalizeAnswer(typed).trim() : normalizeAnswer(typed);
+  const e = trim ? normalizeAnswer(expected).trim() : normalizeAnswer(expected);
   return t === e;
 }
 

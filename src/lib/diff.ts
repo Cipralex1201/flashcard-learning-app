@@ -1,78 +1,127 @@
 type Step =
-  | { t: "match"; ch: string }
-  | { t: "sub"; typed: string; expected: string }
-  | { t: "ins"; ch: string } // typed inserted
-  | { t: "del"; ch: string }; // expected deleted
+  | { t: "match"; typedIndex: number; expectedIndex: number }
+  | { t: "sub"; typedIndex: number; expectedIndex: number }
+  | { t: "ins"; typedIndex: number }
+  | { t: "del"; expectedIndex: number };
 
-function normalize(s: string): string {
-  return s
-    .normalize("NFC")
-    .replace(/[\u0591-\u05C7]/g, "")   // remove Hebrew nikud + cantillation
-    .replace(/[?.()!;\-_'~:,]/g, "");  // remove selected junk chars, keep spaces
+type RawChar = {
+  raw: string;
+  comparable: string | null;
+};
+
+export type DiffChar = {
+  ch: string;
+  kind: "ok" | "bad" | "ignored";
+};
+
+const IGNORE_RE = /[\u0591-\u05C7?.()!;\-_'~]/;
+
+function toComparableChars(s: string): RawChar[] {
+  return Array.from(s.normalize("NFC")).map((ch) => ({
+    raw: ch,
+    comparable: IGNORE_RE.test(ch) ? null : ch,
+  }));
 }
 
 /**
  * Returns per-character coloring for the USER'S typed string.
- * "badly typed letters in red": any inserted/substituted typed char is red.
+ * ignored chars stay visible and get kind="ignored"
  */
-export function diffTypedToExpected(typedRaw: string, expectedRaw: string): Array<{ ch: string; ok: boolean }> {
-  const typed = normalize(typedRaw);
-  const expected = normalize(expectedRaw);
-  const n = typed.length;
-  const m = expected.length;
+export function diffTypedToExpected(
+  typedRaw: string,
+  expectedRaw: string
+): DiffChar[] {
+  const typedChars = toComparableChars(typedRaw);
+  const expectedChars = toComparableChars(expectedRaw);
 
-  // dp[i][j] = edit distance for typed[0..i) vs expected[0..j)
+  const typedComparable: Array<{ ch: string; rawIndex: number }> = [];
+  const expectedComparable: Array<{ ch: string; rawIndex: number }> = [];
+
+  for (let i = 0; i < typedChars.length; i++) {
+    if (typedChars[i].comparable !== null) {
+      typedComparable.push({ ch: typedChars[i].comparable!, rawIndex: i });
+    }
+  }
+
+  for (let i = 0; i < expectedChars.length; i++) {
+    if (expectedChars[i].comparable !== null) {
+      expectedComparable.push({ ch: expectedChars[i].comparable!, rawIndex: i });
+    }
+  }
+
+  const n = typedComparable.length;
+  const m = expectedComparable.length;
+
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
   for (let i = 0; i <= n; i++) dp[i][0] = i;
   for (let j = 0; j <= m; j++) dp[0][j] = j;
 
   for (let i = 1; i <= n; i++) {
     for (let j = 1; j <= m; j++) {
-      const cost = typed[i - 1] === expected[j - 1] ? 0 : 1;
+      const cost = typedComparable[i - 1].ch === expectedComparable[j - 1].ch ? 0 : 1;
       dp[i][j] = Math.min(
-        dp[i - 1][j] + 1,        // delete from typed (i.e., insertion relative to expected)
-        dp[i][j - 1] + 1,        // insert into typed (i.e., deletion relative to expected)
-        dp[i - 1][j - 1] + cost  // sub/match
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
       );
     }
   }
 
-  // Backtrack to steps
   const steps: Step[] = [];
-  let i = n, j = m;
+  let i = n;
+  let j = m;
+
   while (i > 0 || j > 0) {
     if (i > 0 && j > 0) {
-      const cost = typed[i - 1] === expected[j - 1] ? 0 : 1;
+      const cost = typedComparable[i - 1].ch === expectedComparable[j - 1].ch ? 0 : 1;
       if (dp[i][j] === dp[i - 1][j - 1] + cost) {
-        if (cost === 0) steps.push({ t: "match", ch: typed[i - 1] });
-        else steps.push({ t: "sub", typed: typed[i - 1], expected: expected[j - 1] });
-        i--; j--;
+        steps.push(
+          cost === 0
+            ? { t: "match", typedIndex: i - 1, expectedIndex: j - 1 }
+            : { t: "sub", typedIndex: i - 1, expectedIndex: j - 1 }
+        );
+        i--;
+        j--;
         continue;
       }
     }
+
     if (i > 0 && dp[i][j] === dp[i - 1][j] + 1) {
-      steps.push({ t: "ins", ch: typed[i - 1] });
+      steps.push({ t: "ins", typedIndex: i - 1 });
       i--;
       continue;
     }
+
     if (j > 0 && dp[i][j] === dp[i][j - 1] + 1) {
-      steps.push({ t: "del", ch: expected[j - 1] });
+      steps.push({ t: "del", expectedIndex: j - 1 });
       j--;
       continue;
     }
-    // fallback (shouldn't happen)
-    if (i > 0) { steps.push({ t: "ins", ch: typed[i - 1] }); i--; }
-    else { steps.push({ t: "del", ch: expected[j - 1] }); j--; }
+
+    if (i > 0) {
+      steps.push({ t: "ins", typedIndex: i - 1 });
+      i--;
+    } else {
+      steps.push({ t: "del", expectedIndex: j - 1 });
+      j--;
+    }
   }
+
   steps.reverse();
 
-  // Build coloring for typed characters only
-  const out: Array<{ ch: string; ok: boolean }> = [];
+  const rawKinds: Array<"ok" | "bad" | "ignored"> = typedChars.map((ch) =>
+    ch.comparable === null ? "ignored" : "ok"
+  );
+
   for (const st of steps) {
-    if (st.t === "match") out.push({ ch: st.ch, ok: true });
-    if (st.t === "sub") out.push({ ch: st.typed, ok: false });
-    if (st.t === "ins") out.push({ ch: st.ch, ok: false });
-    // deletion doesn't add a typed char
+    if (st.t === "sub" || st.t === "ins") {
+      const rawIndex = typedComparable[st.typedIndex].rawIndex;
+      rawKinds[rawIndex] = "bad";
+    }
   }
-  return out;
+
+  return typedChars.map((item, idx) => ({
+    ch: item.raw,
+    kind: rawKinds[idx],
+  }));
 }
