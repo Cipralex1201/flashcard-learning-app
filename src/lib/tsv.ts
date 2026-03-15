@@ -1,4 +1,5 @@
 import type { Card } from "./types";
+import { makeId } from "./id.ts";
 
 function clean(s: string): string {
   return s.replace(/\r/g, "");
@@ -52,7 +53,7 @@ export function parseTSV(input: string): Card[] {
     const finalTts = tts || finalSideB;
 
     cards.push({
-      id: crypto.randomUUID(),
+      id: makeId(),
       sideA,
       sideB: finalSideB,
       tts: finalTts,

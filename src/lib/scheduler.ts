@@ -1,19 +1,12 @@
 import type { Card, CardState, Question, Settings } from "./types";
 import { ensureState } from "./db";
+import { makeId } from "./id.ts";
 import { topSimilarIndices } from "./similarity";
 
 const DAY = 24 * 60 * 60 * 1000;
 
 function now() {
   return Date.now();
-}
-
-function normTrim(s: string): string {
-  return s
-    .normalize("NFC")
-    .replace(/[\u0591-\u05C7]/g, "")
-    .replace(/[?.()!;\-_'~]/g, "")
-    .trim();
 }
 
 export function makePromptAnswer(card: Card, settings: Settings): { prompt: string; answer: string } {
@@ -328,7 +321,7 @@ function makeQuestionFromCard(card: Card, cards: Card[], settings: Settings): Qu
   const { prompt, answer } = makePromptAnswer(card, settings);
 
   const mode = settings.mode === "mix" ? (Math.random() < 0.5 ? "mc" : "write") : settings.mode;
-  const qid = crypto.randomUUID();
+  const qid = makeId();
 
   if (mode === "write") {
     return { kind: "write", qid, cardId: card.id, prompt, expected: answer };

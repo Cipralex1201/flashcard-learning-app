@@ -9,7 +9,7 @@ A browser-based flashcard learning application designed for efficient vocabulary
 - Flashcard learning interface
 - Import flashcards from simple text files
 - Text-to-speech (TTS) audio generation
-- Multiple language support (Hebrew default, optional English/German)
+- Multiple language support
 - Audio playback for pronunciation
 - Spaced repetition scheduler
 - Similarity-based card comparison to avoid duplicates
@@ -77,24 +77,29 @@ Open the displayed URL in your browser.
 
 ```text
 flashcard-learning-app
-│
-├── src
-│   ├── App.tsx
-│   ├── main.tsx
-│   ├── db.ts
-│   ├── similarity.ts
-│   ├── current-scheduler.ts
-│   ├── types.ts
-│   └── tsv.ts
-│
-├── public
-│   └── audio
-│
 ├── data
-│
-├── gen-tts.mjs
+├── eslint.config.js
+├── index.html
 ├── package.json
-└── README.md
+├── package-lock.json
+├── public
+│   └── audio
+├── README.md
+├── src
+│   ├── App.css
+│   ├── App.tsx
+│   ├── assets
+│   ├── index.css
+│   ├── lib
+│   └── main.tsx
+├── tools
+│   └── gen-tts.mjs
+├── tsconfig.app.json
+├── tsconfig.json
+├── tsconfig.node.json
+└── vite.config.ts
+
+
 ```
 
 Important components:
