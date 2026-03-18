@@ -158,6 +158,15 @@ type DeckEntry = {
   path: string;
 };
 
+function shuffleCopy<T>(input: readonly T[]): T[] {
+  const a = [...input];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 function isDeckEntryArray(x: unknown): x is DeckEntry[] {
   if (!Array.isArray(x)) return false;
   return x.every((d) => {
@@ -412,7 +421,7 @@ export default function App() {
       if (!r.ok) throw new Error(`Failed to load ${deck.path} (${r.status})`);
       const text = await r.text();
 
-      const incoming = parseTSV(text);
+      const incoming = shuffleCopy(parseTSV(text));
       if (incoming.length === 0) throw new Error("Deck parsed as 0 cards. Check file format.");
 
       const nextStates = loadOrInitStatesForCards(incoming);
@@ -427,7 +436,7 @@ export default function App() {
   }
 
   function importTSV() {
-    const incoming = parseTSV(tsvText || SAMPLE);
+    const incoming = shuffleCopy(parseTSV(tsvText || SAMPLE));
     if (incoming.length === 0) return;
 
     // Local, user-pasted deck. Overwrites previous custom deck content.
