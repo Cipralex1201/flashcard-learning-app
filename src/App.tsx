@@ -152,6 +152,25 @@ type WriteInputHandle = {
   focus: () => void;
 };
 
+type DeckEntry = {
+  id: string;
+  title: string;
+  path: string;
+};
+
+function isDeckEntryArray(x: unknown): x is DeckEntry[] {
+  if (!Array.isArray(x)) return false;
+  return x.every((d) => {
+    if (!d || typeof d !== "object") return false;
+    const rec = d as Record<string, unknown>;
+    return (
+      typeof rec.id === "string" &&
+      typeof rec.title === "string" &&
+      typeof rec.path === "string"
+    );
+  });
+}
+
 function WriteInputUncontrolled(props: {
   disabled: boolean;
   resetKey: string;
@@ -199,6 +218,8 @@ export default function App() {
   const [states, setStates] = useState(loadDB().states);
   const [settings, setSettings] = useState<Settings>(loadDB().settings);
 
+  const [view, setView] = useState<"learn" | "import" | "library">("learn");
+
   const [chunkIds, setChunkIds] = useState<string[]>([]);
   const [q, setQ] = useState<Question | null>(null);
 
@@ -206,8 +227,11 @@ export default function App() {
   const [feedback, setFeedback] = useState<{ ok: boolean; expected?: string; correct?: string } | null>(null);
 
   const [tsvText, setTsvText] = useState("");
-  const [isImportOpen, setIsImportOpen] = useState(false);
-  const showImport = isImportOpen || cards.length === 0;
+
+  const [decks, setDecks] = useState<DeckEntry[] | null>(null);
+  const [decksError, setDecksError] = useState<string | null>(null);
+  const [decksLoading, setDecksLoading] = useState(false);
+  const [importingDeckId, setImportingDeckId] = useState<string | null>(null);
 
   const writeHandleRef = useRef<WriteInputHandle | null>(null);
 
@@ -216,6 +240,9 @@ export default function App() {
     setCards(db.cards);
     setStates(db.states);
     setSettings(db.settings);
+
+    // First-time users should land on the server deck library.
+    setView(db.cards.length ? "learn" : "library");
   }, []);
 
   useEffect(() => {
@@ -263,6 +290,34 @@ export default function App() {
     if (!q) newChunkAndQuestion();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cards.length, settings.swap, settings.mode, settings.schedulingMode]);
+
+  useEffect(() => {
+    if (view !== "library") return;
+
+    const ctrl = new AbortController();
+    setDecksLoading(true);
+    setDecksError(null);
+
+    fetch("/decks/index.json", { cache: "no-store", signal: ctrl.signal })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`Failed to load /decks/index.json (${r.status})`);
+        return r.json() as Promise<unknown>;
+      })
+      .then((json) => {
+        if (!isDeckEntryArray(json)) {
+          throw new Error("Invalid deck index format. Expected an array of {id,title,path}.");
+        }
+        setDecks(json);
+      })
+      .catch((err: unknown) => {
+        if ((err as { name?: string } | null)?.name === "AbortError") return;
+        setDecks(null);
+        setDecksError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => setDecksLoading(false));
+
+    return () => ctrl.abort();
+  }, [view]);
 
 
   function afterAnswer(cardId: string, correct: boolean) {
@@ -317,23 +372,129 @@ export default function App() {
     afterAnswer(q.cardId, ok);
   }
 
+  function importCards(incoming: Card[]) {
+    if (incoming.length === 0) return;
+
+    setCards((prev) => [...prev, ...incoming]);
+
+    setStates((prev) => {
+      const nextStates = { ...prev };
+      for (const c of incoming) ensureState(nextStates, c.id);
+      return nextStates;
+    });
+
+    // Force rebuild based on the new card set.
+    setQ(null);
+    setChunkIds([]);
+  }
+
+  async function importDeck(deck: DeckEntry) {
+    try {
+      setImportingDeckId(deck.id);
+      setDecksError(null);
+
+      const r = await fetch(deck.path, { cache: "no-store" });
+      if (!r.ok) throw new Error(`Failed to load ${deck.path} (${r.status})`);
+      const text = await r.text();
+
+      const incoming = parseTSV(text);
+      if (incoming.length === 0) throw new Error("Deck parsed as 0 cards. Check file format.");
+
+      importCards(incoming);
+      setView("learn");
+    } catch (err: unknown) {
+      setDecksError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setImportingDeckId(null);
+    }
+  }
+
   function importTSV() {
     const incoming = parseTSV(tsvText || SAMPLE);
     if (incoming.length === 0) return;
 
-    const merged = [...cards, ...incoming];
-    setCards(merged);
+    importCards(incoming);
 
-    const nextStates = { ...states };
-    for (const c of incoming) ensureState(nextStates, c.id);
-    setStates(nextStates);
-
-    setIsImportOpen(false);
+    setView("learn");
     setTsvText("");
-    setTimeout(() => newChunkAndQuestion(), 0);
   }
 
-  if (showImport) {
+  if (view === "library") {
+    return (
+      <div className="wrap">
+        <header className="head">
+          <div>
+            <h1>Flash Learn</h1>
+            <div className="muted">Server provided flashcard sets</div>
+          </div>
+
+          <div className="row">
+            <button
+              className="ghost"
+              onClick={() => setView("import")}
+              title="Paste/import a custom set"
+            >
+              Import
+            </button>
+            <button
+              className="ghost"
+              onClick={() => setView("learn")}
+              disabled={cards.length === 0}
+              title={cards.length ? "Go to learning" : "Import a deck first"}
+            >
+              Learn
+            </button>
+          </div>
+        </header>
+
+        <section className="card">
+          {decksLoading && <div className="muted">Loading decks…</div>}
+
+          {decksError && (
+            <div className="fb bad">
+              <b>Decks not available</b>
+              <div className="muted small" style={{ marginTop: 6 }}>
+                {decksError}
+              </div>
+              <div className="muted small" style={{ marginTop: 8 }}>
+                Make sure <code>public/decks/index.json</code> exists. You can generate it with
+                <code> npm run gen:decks</code>.
+              </div>
+            </div>
+          )}
+
+          {!!decks?.length && (
+            <div className="grid">
+              {decks.map((d) => (
+                <button
+                  key={d.id}
+                  className="opt"
+                  onClick={() => importDeck(d)}
+                  disabled={!!importingDeckId}
+                  title={d.path}
+                >
+                  <div style={{ fontWeight: 700 }}>{d.title}</div>
+                  <div className="muted small">{d.id}</div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {decks && decks.length === 0 && (
+            <div className="muted">
+              No decks found in <code>public/decks</code>.
+            </div>
+          )}
+        </section>
+
+        <p className="muted small" style={{ marginTop: 10 }}>
+          Runs locally in your browser. Imported cards are saved in your browser storage.
+        </p>
+      </div>
+    );
+  }
+
+  if (view === "import") {
     return (
       <div className="wrap">
         <h1>Flash Learn</h1>
@@ -346,6 +507,12 @@ export default function App() {
 
         <div className="row">
           <button onClick={importTSV}>Import</button>
+          <button className="ghost" onClick={() => setView("library")}>
+            Decks
+          </button>
+          <button className="ghost" onClick={() => setView("learn")} disabled={cards.length === 0}>
+            Learn
+          </button>
         </div>
 
         <p className="muted small">Runs locally in your browser. Data is saved in your browser storage.</p>
@@ -441,6 +608,15 @@ export default function App() {
               />
             </div>
           </div>
+        </div>
+
+        <div className="row">
+          <button className="ghost" onClick={() => setView("library")}>
+            Decks
+          </button>
+          <button className="ghost" onClick={() => setView("import")}>
+            Import
+          </button>
         </div>
       </header>
 

@@ -27,4 +27,4 @@ dist-ssr
 # Data
 /public/
 /data/
-.txt
+*.txt

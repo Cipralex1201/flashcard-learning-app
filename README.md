@@ -166,6 +166,32 @@ The application will automatically:
 
 ---
 
+# Server-Provided Deck Library
+
+This app can show a dedicated **Decks** page that lists flashcard sets served as static files.
+
+## How it works
+
+- Deck files live in `public/decks/*.txt` (or `.tsv`).
+- A deck index file `public/decks/index.json` lists available decks.
+- The app fetches `GET /decks/index.json`, shows clickable tiles, and on click:
+	- fetches the deck text file
+	- parses it using the existing 3-line block format (`term / tts / definition`)
+	- imports it into browser storage
+	- sends the user to the learning screen
+
+## Regenerating the deck index
+
+Whenever you add/remove deck files under `public/decks`, regenerate the index:
+
+```bash
+npm run gen:decks
+```
+
+This runs [tools/gen-deck-index.mjs](tools/gen-deck-index.mjs) and writes `public/decks/index.json`.
+
+---
+
 # Generating Audio (TTS)
 
 Audio files can be generated with the provided script.
