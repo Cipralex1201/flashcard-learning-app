@@ -553,18 +553,6 @@ export default function App() {
 
           <div className="row" style={{ marginTop: 10 }}>
             <div className="pill">
-              <span className="muted small">Scheduling</span>
-              <b>
-                {settings.schedulingMode === "practice" ? "Practice" : "Learning"}
-              </b>
-            </div>
-
-            <div className="pill">
-              <span className="muted small">Direction</span>
-              <b>{settings.swap ? "Definition → Term" : "Term → Definition"}</b>
-            </div>
-
-            <div className="pill">
               <span className="muted small">Learning</span>
               <label className="switch" title="Toggle scheduling mode">
                 <input
