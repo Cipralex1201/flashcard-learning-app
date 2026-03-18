@@ -339,14 +339,36 @@ function makeQuestionFromCard(card: Card, cards: Card[], settings: Settings): Qu
 
   // MC: dist similarity on answer side
   const answers = cards.map((c) => makePromptAnswer(c, settings).answer);
+  const answerKeys = answers.map((a) => normalizeAnswer(a).trim());
   const idx = cards.findIndex((c) => c.id === card.id);
+  const correctKey = normalizeAnswer(answer).trim();
 
   const similarIdx = topSimilarIndices(answers, idx, 12);
-  const distractorIdx = similarIdx.slice(0, 3);
 
-  while (distractorIdx.length < 3 && distractorIdx.length < cards.length - 1) {
+  const distractorIdx: number[] = [];
+  const usedKeys = new Set<string>();
+  usedKeys.add(correctKey);
+
+  // Prefer similar distractors, but never include duplicates by (normalized) answer text.
+  for (const i of similarIdx) {
+    if (distractorIdx.length >= 3) break;
+    if (i === idx) continue;
+    const k = answerKeys[i] ?? "";
+    if (!k || usedKeys.has(k)) continue;
+    distractorIdx.push(i);
+    usedKeys.add(k);
+  }
+
+  // Fill remaining slots with random unique answers.
+  let guard = 0;
+  while (distractorIdx.length < 3 && usedKeys.size < cards.length && guard < 10_000) {
+    guard++;
     const r = Math.floor(Math.random() * cards.length);
-    if (r !== idx && !distractorIdx.includes(r)) distractorIdx.push(r);
+    if (r === idx) continue;
+    const k = answerKeys[r] ?? "";
+    if (!k || usedKeys.has(k)) continue;
+    distractorIdx.push(r);
+    usedKeys.add(k);
   }
 
   const options = [answer, ...distractorIdx.map((i) => answers[i])].sort(() => Math.random() - 0.5);
