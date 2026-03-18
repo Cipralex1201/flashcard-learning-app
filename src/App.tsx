@@ -4,17 +4,7 @@ import { parseTSV } from "./lib/tsv";
 import type { Card, Question, Settings, CardState } from "./lib/types";
 import { buildChunk, makeQuestion, applyAnswer, gradeWrite } from "./lib/scheduler";
 import { diffTypedToExpected } from "./lib/diff";
-import { listVoices, speak } from "./lib/tts";
-
-type Step =
-  | { t: "match"; ch: string }
-  | { t: "sub"; typed: string; expected: string }
-  | { t: "ins"; ch: string } // typed inserted
-  | { t: "del"; ch: string }; // expected deleted
-
-function normalizeNFC(s: string): string {
-  return s.normalize("NFC");
-}
+import { speak } from "./lib/tts";
 
 /**
  * Returns per-character highlighting for the EXPECTED string.
@@ -219,7 +209,6 @@ export default function App() {
   const [isImportOpen, setIsImportOpen] = useState(false);
   const showImport = isImportOpen || cards.length === 0;
 
-  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const writeHandleRef = useRef<WriteInputHandle | null>(null);
 
   useEffect(() => {
@@ -232,15 +221,6 @@ export default function App() {
   useEffect(() => {
     saveDB({ cards, states, settings });
   }, [cards, states, settings]);
-
-  useEffect(() => {
-    const refresh = () => setVoices(listVoices());
-    refresh();
-    window.speechSynthesis.onvoiceschanged = refresh;
-    return () => {
-      window.speechSynthesis.onvoiceschanged = null;
-    };
-  }, []);
 
   useEffect(() => {
     if (!cards.length) return;
@@ -393,6 +373,11 @@ export default function App() {
             </div>
 
             <div className="pill">
+              <span className="muted small">Direction</span>
+              <b>{settings.swap ? "Definition → Term" : "Term → Definition"}</b>
+            </div>
+
+            <div className="pill">
               <span className="muted small">Learning</span>
               <label className="switch" title="Toggle scheduling mode">
                 <input
@@ -412,6 +397,25 @@ export default function App() {
                 <span />
               </label>
               <span className="muted small">Practice</span>
+            </div>
+
+            <div className="pill">
+              <span className="muted small">Term → Def</span>
+              <label className="switch" title="Toggle question direction">
+                <input
+                  type="checkbox"
+                  checked={settings.swap}
+                  onChange={(e) => {
+                    const swap = e.target.checked;
+                    setSettings((s) => ({ ...s, swap }));
+
+                    // force rebuild
+                    setQ(null);
+                  }}
+                />
+                <span />
+              </label>
+              <span className="muted small">Def → Term</span>
             </div>
           </div>
 

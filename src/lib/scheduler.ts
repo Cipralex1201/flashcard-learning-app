@@ -327,7 +327,7 @@ function makeQuestionFromCard(card: Card, cards: Card[], settings: Settings): Qu
     return { kind: "write", qid, cardId: card.id, prompt, expected: answer };
   }
 
-  // MC: distractors by similarity on answer side
+  // MC: dist similarity on answer side
   const answers = cards.map((c) => makePromptAnswer(c, settings).answer);
   const idx = cards.findIndex((c) => c.id === card.id);
 
