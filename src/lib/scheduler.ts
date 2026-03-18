@@ -156,11 +156,15 @@ function allEasyPool(ids: string[], states: Record<string, CardState>): boolean 
 
 const BOX_SIZE = 10;
 const SLIDE_BY = 5;
-const BOX_PTR_KEY = "hfl_box_ptr_v1";
+const BOX_PTR_KEY_PREFIX = "hfl_box_ptr_v1:";
 
-function loadBoxPtr(): number {
+function boxPtrKey(scope?: string): string {
+  return `${BOX_PTR_KEY_PREFIX}${scope ?? "global"}`;
+}
+
+function loadBoxPtr(scope?: string): number {
   try {
-    const raw = localStorage.getItem(BOX_PTR_KEY);
+    const raw = localStorage.getItem(boxPtrKey(scope));
     const n = raw ? Number(raw) : 0;
     return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
   } catch {
@@ -168,9 +172,9 @@ function loadBoxPtr(): number {
   }
 }
 
-function saveBoxPtr(ptr: number) {
+function saveBoxPtr(ptr: number, scope?: string) {
   try {
-    localStorage.setItem(BOX_PTR_KEY, String(Math.max(0, Math.floor(ptr))));
+    localStorage.setItem(boxPtrKey(scope), String(Math.max(0, Math.floor(ptr))));
   } catch {
     // ignore
   }
@@ -263,7 +267,12 @@ function pickNextCardIdInPool(cards: Card[], states: Record<string, CardState>, 
    - settings.schedulingMode selects the algorithm.
    ========================================================= */
 
-export function buildChunk(cards: Card[], states: Record<string, CardState>, settings: Settings): string[] {
+export function buildChunk(
+  cards: Card[],
+  states: Record<string, CardState>,
+  settings: Settings,
+  scope?: string
+): string[] {
   if (settings.schedulingMode === "practice") {
     // Old scheduler never used chunks.
     return [];
@@ -271,7 +280,7 @@ export function buildChunk(cards: Card[], states: Record<string, CardState>, set
 
   // learning: build the active pool
   if (cards.length === 0) return [];
-  let ptr = loadBoxPtr();
+  let ptr = loadBoxPtr(scope);
   if (ptr >= cards.length) ptr = 0;
   return buildPoolFromPtr(cards, states, ptr);
 }
@@ -280,7 +289,8 @@ export function makeQuestion(
   cards: Card[],
   states: Record<string, CardState>,
   settings: Settings,
-  chunkIds: string[] = []
+  chunkIds: string[] = [],
+  scope?: string
 ): Question | null {
   if (cards.length === 0) return null;
 
@@ -297,13 +307,13 @@ export function makeQuestion(
   }
 
   // LEARNING (box)
-  const poolIds = chunkIds.length > 0 ? chunkIds : buildChunk(cards, states, settings);
+  const poolIds = chunkIds.length > 0 ? chunkIds : buildChunk(cards, states, settings, scope);
   if (poolIds.length === 0) return null;
 
   // if current box is complete => slide + force rebuild
   if (allEasyPool(poolIds, states)) {
-    const ptr = loadBoxPtr();
-    saveBoxPtr(ptr + SLIDE_BY);
+    const ptr = loadBoxPtr(scope);
+    saveBoxPtr(ptr + SLIDE_BY, scope);
     return null;
   }
 

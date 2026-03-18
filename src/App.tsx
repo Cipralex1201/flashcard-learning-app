@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { loadDB, saveDB, ensureState } from "./lib/db";
+import { ensureState, loadDB, loadDeck, saveDB } from "./lib/db";
 import { parseTSV } from "./lib/tsv";
 import type { Card, Question, Settings, CardState } from "./lib/types";
 import { buildChunk, makeQuestion, applyAnswer, gradeWrite } from "./lib/scheduler";
@@ -214,11 +214,27 @@ function WriteInputUncontrolled(props: {
 }
 
 export default function App() {
-  const [cards, setCards] = useState<Card[]>([]);
-  const [states, setStates] = useState(loadDB().states);
-  const [settings, setSettings] = useState<Settings>(loadDB().settings);
+  const [boot] = useState(() => loadDB());
 
-  const [view, setView] = useState<"learn" | "import" | "library">("learn");
+  const [activeDeck, setActiveDeck] = useState<{
+    id: string | null;
+    cards: Card[];
+    states: Record<string, CardState>;
+  }>(() => ({
+    id: boot.activeDeckId,
+    cards: boot.cards,
+    states: boot.states,
+  }));
+
+  const activeDeckId = activeDeck.id;
+  const cards = activeDeck.cards;
+  const states = activeDeck.states;
+
+  const [settings, setSettings] = useState<Settings>(boot.settings);
+
+  const [view, setView] = useState<"learn" | "import" | "library">(
+    boot.cards.length ? "learn" : "library"
+  );
 
   const [chunkIds, setChunkIds] = useState<string[]>([]);
   const [q, setQ] = useState<Question | null>(null);
@@ -236,24 +252,14 @@ export default function App() {
   const writeHandleRef = useRef<WriteInputHandle | null>(null);
 
   useEffect(() => {
-    const db = loadDB();
-    setCards(db.cards);
-    setStates(db.states);
-    setSettings(db.settings);
-
-    // First-time users should land on the server deck library.
-    setView(db.cards.length ? "learn" : "library");
-  }, []);
-
-  useEffect(() => {
-    saveDB({ cards, states, settings });
-  }, [cards, states, settings]);
+    saveDB({ activeDeckId, cards, states, settings });
+  }, [activeDeckId, cards, states, settings]);
 
   useEffect(() => {
     if (!cards.length) return;
     const next = { ...states };
     for (const c of cards) ensureState(next, c.id);
-    setStates(next);
+    setActiveDeck((d) => ({ ...d, states: next }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cards.length]);
 
@@ -278,9 +284,9 @@ export default function App() {
   }, [cards, states]);
 
   function newChunkAndQuestion() {
-    const chunk = buildChunk(cards, { ...states }, settings);
+    const chunk = buildChunk(cards, { ...states }, settings, activeDeckId ?? undefined);
     setChunkIds(chunk);
-    setQ(makeQuestion(cards, { ...states }, settings, chunk));
+    setQ(makeQuestion(cards, { ...states }, settings, chunk, activeDeckId ?? undefined));
     setLastTyped("");
     setFeedback(null);
   }
@@ -323,9 +329,11 @@ export default function App() {
   function afterAnswer(cardId: string, correct: boolean) {
     if (!q) return;
 
-    const next = { ...states };
-    applyAnswer(next, cardId, q.kind, correct);
-    setStates(next);
+    setActiveDeck((d) => {
+      const nextStates = { ...d.states };
+      applyAnswer(nextStates, cardId, q.kind, correct);
+      return { ...d, states: nextStates };
+    });
 
     const card = cards.find((c) => c.id === cardId);
     if (card) speak(card.tts, settings);
@@ -340,7 +348,7 @@ export default function App() {
 
 
   function nextQuestionMaybeRebuild() {
-    const nq = makeQuestion(cards, { ...states }, settings, chunkIds);
+    const nq = makeQuestion(cards, { ...states }, settings, chunkIds, activeDeckId ?? undefined);
     if (!nq) newChunkAndQuestion();
     else {
       setQ(nq);
@@ -372,26 +380,33 @@ export default function App() {
     afterAnswer(q.cardId, ok);
   }
 
-  function importCards(incoming: Card[]) {
-    if (incoming.length === 0) return;
-
-    setCards((prev) => [...prev, ...incoming]);
-
-    setStates((prev) => {
-      const nextStates = { ...prev };
-      for (const c of incoming) ensureState(nextStates, c.id);
-      return nextStates;
-    });
-
-    // Force rebuild based on the new card set.
-    setQ(null);
+  function flushSession() {
     setChunkIds([]);
+    setQ(null);
+    setLastTyped("");
+    setFeedback(null);
+    writeHandleRef.current?.clear();
   }
 
-  async function importDeck(deck: DeckEntry) {
+  function loadOrInitStatesForCards(incoming: Card[]): Record<string, CardState> {
+    const nextStates: Record<string, CardState> = {};
+    for (const c of incoming) ensureState(nextStates, c.id);
+    return nextStates;
+  }
+
+  async function openDeck(deck: DeckEntry) {
     try {
       setImportingDeckId(deck.id);
       setDecksError(null);
+
+      // If already imported once, reuse stored card ids so scheduling progress matches.
+      const cached = loadDeck(deck.id);
+      if (cached && cached.cards.length) {
+        flushSession();
+        setActiveDeck({ id: deck.id, cards: cached.cards, states: cached.states });
+        setView("learn");
+        return;
+      }
 
       const r = await fetch(deck.path, { cache: "no-store" });
       if (!r.ok) throw new Error(`Failed to load ${deck.path} (${r.status})`);
@@ -400,7 +415,9 @@ export default function App() {
       const incoming = parseTSV(text);
       if (incoming.length === 0) throw new Error("Deck parsed as 0 cards. Check file format.");
 
-      importCards(incoming);
+      const nextStates = loadOrInitStatesForCards(incoming);
+      flushSession();
+      setActiveDeck({ id: deck.id, cards: incoming, states: nextStates });
       setView("learn");
     } catch (err: unknown) {
       setDecksError(err instanceof Error ? err.message : String(err));
@@ -413,8 +430,11 @@ export default function App() {
     const incoming = parseTSV(tsvText || SAMPLE);
     if (incoming.length === 0) return;
 
-    importCards(incoming);
-
+    // Local, user-pasted deck. Overwrites previous custom deck content.
+    const customDeckId = "custom";
+    const nextStates = loadOrInitStatesForCards(incoming);
+    flushSession();
+    setActiveDeck({ id: customDeckId, cards: incoming, states: nextStates });
     setView("learn");
     setTsvText("");
   }
@@ -469,7 +489,7 @@ export default function App() {
                 <button
                   key={d.id}
                   className="opt"
-                  onClick={() => importDeck(d)}
+                  onClick={() => openDeck(d)}
                   disabled={!!importingDeckId}
                   title={d.path}
                 >

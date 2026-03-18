@@ -1,14 +1,32 @@
 import type { Card, CardState, Settings } from "./types";
 
-type DBShape = {
+type DeckShape = {
   cards: Card[];
   states: Record<string, CardState>;
+};
+
+export type DBShape = {
+  /** The currently selected deck (null means no deck selected yet) */
+  activeDeckId: string | null;
+  /** Active deck data (cards+states) */
+  cards: Card[];
+  states: Record<string, CardState>;
+  /** Global settings shared across decks */
   settings: Settings;
 };
 
-// Bump key so old incompatible state doesn't break things.
-// (You can keep migration too, but bumping prevents weirdness.)
-const DB_KEY = "hebrew_flash_db_v2_sm2";
+// Legacy single-deck key (pre deck separation)
+const LEGACY_DB_KEY = "hebrew_flash_db_v2_sm2";
+
+// New, per-scope keys
+const SETTINGS_KEY = "hfl_settings_v1";
+const ACTIVE_DECK_KEY = "hfl_active_deck_v1";
+const DECK_KEY_PREFIX = "hfl_deck_v1:";
+const LEGACY_DECK_ID = "legacy";
+
+function deckKey(deckId: string): string {
+  return `${DECK_KEY_PREFIX}${deckId}`;
+}
 
 const defaultSettings: Settings = {
   swap: false,
@@ -22,6 +40,65 @@ const defaultSettings: Settings = {
   schedulingMode: "learning",
   lastShownAt: 0
 };
+
+function readJSON(key: string): unknown | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function writeJSON(key: string, value: unknown) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+function hasAnyNewFormatData(): boolean {
+  try {
+    if (localStorage.getItem(SETTINGS_KEY)) return true;
+    if (localStorage.getItem(ACTIVE_DECK_KEY)) return true;
+
+    // detect at least one per-deck entry
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(DECK_KEY_PREFIX)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One-time migration:
+ * - Moves legacy single-deck DB into a named deck ("legacy")
+ * - Stores settings globally
+ * - Sets activeDeckId to "legacy" when legacy contained cards
+ */
+function maybeMigrateLegacy() {
+  if (hasAnyNewFormatData()) return;
+
+  const legacy = readJSON(LEGACY_DB_KEY) as
+    | { cards?: Card[]; states?: Record<string, CardState>; settings?: Partial<Settings> }
+    | null;
+  if (!legacy) return;
+
+  const cards = Array.isArray(legacy.cards) ? legacy.cards : [];
+  const states = (legacy.states && typeof legacy.states === "object")
+    ? (legacy.states as Record<string, CardState>)
+    : {};
+  const settings = { ...defaultSettings, ...(legacy.settings ?? {}) };
+
+  try {
+    writeJSON(SETTINGS_KEY, settings);
+    writeJSON(deckKey(LEGACY_DECK_ID), { cards, states } satisfies DeckShape);
+    localStorage.setItem(ACTIVE_DECK_KEY, cards.length ? LEGACY_DECK_ID : "");
+  } catch {
+    // ignore migration failures (e.g. storage disabled)
+  }
+}
 
 function defaultCardState(cardId: string): CardState {
   const now = Date.now();
@@ -43,24 +120,69 @@ function defaultCardState(cardId: string): CardState {
   };
 }
 
-export function loadDB(): DBShape {
-  const raw = localStorage.getItem(DB_KEY);
-  if (!raw) return { cards: [], states: {}, settings: defaultSettings };
+export function loadSettings(): Settings {
+  maybeMigrateLegacy();
+  const raw = readJSON(SETTINGS_KEY) as Partial<Settings> | null;
+  return { ...defaultSettings, ...(raw ?? {}) };
+}
 
+export function saveSettings(settings: Settings) {
+  maybeMigrateLegacy();
+  writeJSON(SETTINGS_KEY, settings);
+}
+
+export function loadActiveDeckId(): string | null {
+  maybeMigrateLegacy();
   try {
-    const parsed = JSON.parse(raw) as DBShape;
-    return {
-      cards: parsed.cards ?? [],
-      states: parsed.states ?? {},
-      settings: { ...defaultSettings, ...(parsed.settings ?? {}) },
-    };
+    const raw = localStorage.getItem(ACTIVE_DECK_KEY);
+    const id = raw && raw.trim().length ? raw.trim() : null;
+    return id;
   } catch {
-    return { cards: [], states: {}, settings: defaultSettings };
+    return null;
   }
 }
 
+export function saveActiveDeckId(deckId: string | null) {
+  maybeMigrateLegacy();
+  try {
+    localStorage.setItem(ACTIVE_DECK_KEY, deckId ?? "");
+  } catch {
+    // ignore
+  }
+}
+
+export function loadDeck(deckId: string): DeckShape | null {
+  maybeMigrateLegacy();
+  const raw = readJSON(deckKey(deckId)) as Partial<DeckShape> | null;
+  if (!raw) return null;
+  const cards = Array.isArray(raw.cards) ? (raw.cards as Card[]) : [];
+  const states = (raw.states && typeof raw.states === "object")
+    ? (raw.states as Record<string, CardState>)
+    : {};
+  return { cards, states };
+}
+
+export function saveDeck(deckId: string, deck: DeckShape) {
+  maybeMigrateLegacy();
+  writeJSON(deckKey(deckId), deck);
+}
+
+export function loadDB(): DBShape {
+  const settings = loadSettings();
+  const activeDeckId = loadActiveDeckId();
+  const deck = activeDeckId ? loadDeck(activeDeckId) : null;
+  return {
+    activeDeckId,
+    cards: deck?.cards ?? [],
+    states: deck?.states ?? {},
+    settings,
+  };
+}
+
 export function saveDB(db: DBShape) {
-  localStorage.setItem(DB_KEY, JSON.stringify(db));
+  saveSettings(db.settings);
+  saveActiveDeckId(db.activeDeckId);
+  if (db.activeDeckId) saveDeck(db.activeDeckId, { cards: db.cards, states: db.states });
 }
 
 /**
@@ -95,14 +217,22 @@ export function ensureState(states: Record<string, CardState>, cardId: string): 
   return states[cardId];
 }
 
-export function resetProgressKeepCards(): DBShape {
+export function resetProgressKeepCards(deckId?: string): DBShape {
   const db = loadDB();
+  const targetDeckId = deckId ?? db.activeDeckId;
+  if (!targetDeckId) return db;
+  const deck = loadDeck(targetDeckId);
+  if (!deck) return db;
+
   const newStates: Record<string, CardState> = {};
-  for (const c of db.cards) {
-    newStates[c.id] = defaultCardState(c.id);
+  for (const c of deck.cards) newStates[c.id] = defaultCardState(c.id);
+
+  saveDeck(targetDeckId, { cards: deck.cards, states: newStates });
+
+  if (db.activeDeckId === targetDeckId) {
+    return { ...db, states: newStates };
   }
-  db.states = newStates;
-  saveDB(db);
+
   return db;
 }
 
