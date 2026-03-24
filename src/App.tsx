@@ -26,7 +26,7 @@ const IGNORE_RE = /[\u0591-\u05C7?.()!;\-_'~]/;
 function toComparableCharsExpected(s: string): ExpectedRawChar[] {
   return Array.from(s.normalize("NFC")).map((ch) => ({
     raw: ch,
-    comparable: IGNORE_RE.test(ch) ? null : ch,
+    comparable: IGNORE_RE.test(ch) ? null : ch.toLocaleLowerCase(),
   }));
 }
 

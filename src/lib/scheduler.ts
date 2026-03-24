@@ -19,7 +19,8 @@ function normalizeAnswer(s: string): string {
   return s
     .normalize("NFC")
     .replace(/[\u0591-\u05C7]/g, "")
-    .replace(/[?.()!;\-_'~]/g, "");
+    .replace(/[?.()!;\-_'~]/g, "")
+    .toLocaleLowerCase();
 }
 
 export function gradeWrite(typed: string, expected: string, trim: boolean): boolean {
