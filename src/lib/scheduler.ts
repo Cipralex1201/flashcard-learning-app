@@ -338,13 +338,14 @@ function makeQuestionFromCard(card: Card, cards: Card[], settings: Settings): Qu
     return { kind: "write", qid, cardId: card.id, prompt, expected: answer };
   }
 
-  // MC: dist similarity on answer side
+  // MC: in def->term, rank distractors by definition similarity while still showing term options.
   const answers = cards.map((c) => makePromptAnswer(c, settings).answer);
+  const similarityBasis = settings.swap ? cards.map((c) => c.sideB) : answers;
   const answerKeys = answers.map((a) => normalizeAnswer(a).trim());
   const idx = cards.findIndex((c) => c.id === card.id);
   const correctKey = normalizeAnswer(answer).trim();
 
-  const similarIdx = topSimilarIndices(answers, idx, 12);
+  const similarIdx = topSimilarIndices(similarityBasis, idx, 12);
 
   const distractorIdx: number[] = [];
   const usedKeys = new Set<string>();
